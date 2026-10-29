@@ -1,0 +1,3 @@
+(sym_lib_table
+  (lib (name "stingray")(type "KiCad")(uri "${KIPRJMOD}/stingray.kicad_sym")(options "")(descr "Stingray ROV proje sembolleri"))
+)

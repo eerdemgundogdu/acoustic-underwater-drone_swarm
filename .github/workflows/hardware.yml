@@ -1,0 +1,39 @@
+name: hardware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'hardware/**'
+      - '.github/workflows/hardware.yml'
+  pull_request:
+    paths:
+      - 'hardware/**'
+
+jobs:
+  kicad:
+    runs-on: ubuntu-latest
+    container:
+      image: kicad/kicad:9.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ERC
+        run: |
+          kicad-cli sch erc \
+            --severity-error \
+            --exit-code-violations \
+            -o /tmp/erc.rpt \
+            hardware/pelagos-node-carrier/pelagos-node-carrier.kicad_sch
+
+      - name: DRC (sematik paritesi dahil)
+        run: |
+          python3 hardware/gen/check_parity.py
+          kicad-cli pcb drc \
+            --schematic-parity \
+            --severity-error \
+            --exit-code-violations \
+            --format json \
+            -o /tmp/drc.json \
+            hardware/pelagos-node-carrier/pelagos-node-carrier.kicad_pcb
+          python3 -c "import json; d=json.load(open('/tmp/drc.json')); print('violations:', len(d['violations']), 'unconnected:', len(d['unconnected_items']), 'parity:', len(d['schematic_parity'])); assert not d['violations'] and not d['unconnected_items'] and not d['schematic_parity']"

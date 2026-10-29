@@ -1,0 +1,47 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  dsp-python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install numpy
+        run: pip install numpy
+      - name: Run LOFAR/DEMON & Piezo Swarm tests
+        run: python3 dsp/test_acoustic_pipeline.py
+
+  firmware-host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure C++ host tests
+        run: cmake -S firmware/test -B build/test
+      - name: Build C++ host tests
+        run: cmake --build build/test
+      - name: Run C++ host tests
+        run: ctest --test-dir build/test --output-on-failure
+
+  firmware-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-pelagos-v1
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build Cortex-M7 / Teensy 4.1 acoustic node firmware
+        working-directory: firmware
+        run: pio run -e teensy41_acoustic_node

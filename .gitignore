@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+build/
+.pio/
+hardware/pelagos-node-carrier/*-backups/
+hardware/pelagos-node-carrier/fp-info-cache
+hardware/pelagos-node-carrier/*.lck
+hardware/pelagos-node-carrier/placement.kicad_pcb
+hardware/pelagos-node-carrier/routed.kicad_pcb
