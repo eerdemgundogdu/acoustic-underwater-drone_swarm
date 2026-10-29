@@ -10,7 +10,7 @@ import os
 from design import TEENSY_LEFT, TEENSY_RIGHT
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROJ = os.path.join(HERE, '..', 'pelagos-node-carrier')
+PROJ = os.path.join(HERE, '..', 'acoustic-swarm-node')
 
 PITCH = 2.54
 ROW_GAP = 15.24

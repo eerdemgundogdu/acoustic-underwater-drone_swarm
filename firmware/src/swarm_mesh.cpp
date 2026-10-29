@@ -1,6 +1,6 @@
 #include "swarm_mesh.h"
 
-namespace pelagos {
+namespace acoustic_node {
 
 uint16_t crc16_ccitt(const uint8_t* data, size_t len) {
     uint16_t crc = 0xFFFF;
@@ -136,4 +136,4 @@ bool SwarmMeshRouter::process_incoming(const uint8_t rx_frame[kSwarmFrameSize],
     return true;
 }
 
-}  // namespace pelagos
+}  // namespace acoustic_node

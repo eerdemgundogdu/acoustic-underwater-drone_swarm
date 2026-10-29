@@ -1,4 +1,4 @@
-"""Pelagos Deniz Tabani Akustik Sinyal Isleme (LOFAR / DEMON / TPSW-CFAR),
+"""Acoustic Swarm Deniz Tabani Akustik Sinyal Isleme (LOFAR / DEMON / TPSW-CFAR),
 Piezoelektrik Dalga Enerji Hasadi ve Akustik Suru (Swarm) Benzetim Cekirdegi.
 
 Not: Saha hidrofon kalibrasyon katsayilari ve gercek hedef akustik imza

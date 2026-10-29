@@ -3,7 +3,7 @@
 #include <math.h>
 #include <string.h>
 
-namespace pelagos {
+namespace acoustic_node {
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
@@ -243,4 +243,4 @@ AcousticSignature analyze_hydrophone_frame(
     return sig;
 }
 
-}  // namespace pelagos
+}  // namespace acoustic_node

@@ -1,6 +1,6 @@
 # Donanım Tasarım Kararları ve Hesaplamalar (`DESIGN.md`)
 
-Bu belge, `pelagos-node-carrier` (Rev A) kartındaki güç yönetimi, piezoelektrik enerji hasadı tamponlaması, hidrofon analog ön-ucu (AFE) anti-aliasing filtrelemesi ve donanımsal manyetik kurma/emniyet zinciri hesaplarını özetler.
+Bu belge, `acoustic-swarm-node` (Rev A) kartındaki güç yönetimi, piezoelektrik enerji hasadı tamponlaması, hidrofon analog ön-ucu (AFE) anti-aliasing filtrelemesi ve donanımsal manyetik kurma/emniyet zinciri hesaplarını özetler.
 
 ---
 

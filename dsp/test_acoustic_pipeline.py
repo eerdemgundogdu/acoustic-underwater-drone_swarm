@@ -1,4 +1,4 @@
-"""Pelagos DSP (LOFAR / DEMON / TPSW-CFAR) ve Piezo Hasat / Suru Benzetim Testleri."""
+"""Acoustic Swarm DSP (LOFAR / DEMON / TPSW-CFAR) ve Piezo Hasat / Suru Benzetim Testleri."""
 
 import os
 import sys

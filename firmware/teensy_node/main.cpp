@@ -1,5 +1,5 @@
-// Pelagos Deniz Tabani Akustik Dugumu — Gomulu Cortex-M7 / Teensy 4.1 Firmware
-// Donanim: pelagos-node-carrier Rev A (2 katmanli PCB)
+// Acoustic Swarm Deniz Tabani Akustik Dugumu — Gomulu Cortex-M7 / Teensy 4.1 Firmware
+// Donanim: acoustic-swarm-node Rev A (2 katmanli PCB)
 //   - Pin 16 (A2) : Hidrofon AFE ADC girisi (IntervalTimer 1024 Hz cift tamponlu)
 //   - Pin 15 (A1) : Piezo enerji hasadi / HV tampon gerilim olcumu (68k/10k)
 //   - Pin 14 (A0) : Basinc govdesi su sizinti probu (10k/47k)
@@ -33,15 +33,15 @@ constexpr uint8_t kNodeId        = 0x03;
 constexpr uint32_t kSwarmKey     = 0x50454C41u;  // Demo suru anahtari
 
 // Cift tamponlu (ping-pong) DMA/ISR ses ornekleme dizileri
-volatile float g_adc_buf[2][pelagos::kFftSize];
+volatile float g_adc_buf[2][acoustic_node::kFftSize];
 volatile uint8_t g_active_buf = 0;
 volatile size_t g_sample_idx  = 0;
 volatile bool g_frame_ready   = false;
 volatile uint8_t g_ready_buf  = 0;
 
 IntervalTimer g_adc_timer;
-pelagos::PiezoHarvesterFSM g_power_fsm;
-pelagos::SwarmMeshRouter g_mesh_router(kNodeId, kSwarmKey);
+acoustic_node::PiezoHarvesterFSM g_power_fsm;
+acoustic_node::SwarmMeshRouter g_mesh_router(kNodeId, kSwarmKey);
 uint8_t g_seq_counter = 0;
 
 void adc_isr() {
@@ -52,7 +52,7 @@ void adc_isr() {
     size_t idx = g_sample_idx;
     g_adc_buf[b][idx] = norm;
     ++idx;
-    if (idx >= pelagos::kFftSize) {
+    if (idx >= acoustic_node::kFftSize) {
         g_ready_buf = b;
         g_frame_ready = true;
         g_active_buf = b ^ 1u;
@@ -74,9 +74,9 @@ bool read_hull_leak() {
 }
 
 // 16 baytlik akustik paketi BFSK (24 kHz = bit 0, 28 kHz = bit 1) olarak gonder
-void transmit_bfsk_packet(const uint8_t frame[pelagos::kSwarmFrameSize]) {
+void transmit_bfsk_packet(const uint8_t frame[acoustic_node::kSwarmFrameSize]) {
     digitalWriteFast(kPinModemEn, HIGH);
-    for (size_t i = 0; i < pelagos::kSwarmFrameSize; ++i) {
+    for (size_t i = 0; i < acoustic_node::kSwarmFrameSize; ++i) {
         uint8_t byte_val = frame[i];
         for (int b = 7; b >= 0; --b) {
             bool bit_one = ((byte_val >> b) & 0x01) != 0;
@@ -115,11 +115,11 @@ void loop() {
         return;
     }
 
-    float local_frame[pelagos::kFftSize];
+    float local_frame[acoustic_node::kFftSize];
     noInterrupts();
     uint8_t buf_idx = g_ready_buf;
     g_frame_ready = false;
-    for (size_t i = 0; i < pelagos::kFftSize; ++i) {
+    for (size_t i = 0; i < acoustic_node::kFftSize; ++i) {
         local_frame[i] = g_adc_buf[buf_idx][i];
     }
     interrupts();
@@ -129,19 +129,19 @@ void loop() {
     bool arm_ok = digitalReadFast(kPinArmSense) == HIGH;
 
     g_power_fsm.set_bus_voltage(v_bus);
-    pelagos::AcousticSignature sig =
-        pelagos::analyze_hydrophone_frame(local_frame, pelagos::kFftSize, kSampleRateHz);
+    acoustic_node::AcousticSignature sig =
+        acoustic_node::analyze_hydrophone_frame(local_frame, acoustic_node::kFftSize, kSampleRateHz);
 
     bool wake_trig = sig.lofar_snr_db >= 8.0f;
-    bool hostile = (sig.iff_class == pelagos::IFF_HOSTILE_TRACK);
+    bool hostile = (sig.iff_class == acoustic_node::IFF_HOSTILE_TRACK);
 
-    pelagos::NodePowerState st = g_power_fsm.step(
+    acoustic_node::NodePowerState st = g_power_fsm.step(
         1.0f, 12.0f, wake_trig, hostile, arm_ok, leak);
 
     digitalWriteFast(kPinStatusLed, hostile ? HIGH : LOW);
 
-    if (st == pelagos::STATE_SWARM_TX_ALERT) {
-        pelagos::SwarmAcousticPacket pkt{};
+    if (st == acoustic_node::STATE_SWARM_TX_ALERT) {
+        acoustic_node::SwarmAcousticPacket pkt{};
         pkt.src_node_id = kNodeId;
         pkt.seq_num     = ++g_seq_counter;
         pkt.hop_count   = 0;
@@ -152,8 +152,8 @@ void loop() {
         pkt.snr_db_q2   = static_cast<uint8_t>(sig.lofar_snr_db * 4.0f);
         pkt.soc_pct     = g_power_fsm.soc_percent();
 
-        uint8_t frame[pelagos::kSwarmFrameSize];
-        pelagos::encode_swarm_frame(pkt, kSwarmKey, frame);
+        uint8_t frame[acoustic_node::kSwarmFrameSize];
+        acoustic_node::encode_swarm_frame(pkt, kSwarmKey, frame);
         transmit_bfsk_packet(frame);
     }
 }

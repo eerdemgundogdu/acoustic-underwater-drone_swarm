@@ -13,10 +13,10 @@ import zipfile
 import design
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROJ = os.path.normpath(os.path.join(HERE, '..', 'pelagos-node-carrier'))
+PROJ = os.path.normpath(os.path.join(HERE, '..', 'acoustic-swarm-node'))
 OUT = os.path.normpath(os.path.join(HERE, '..', 'output'))
-PCB = os.path.join(PROJ, 'pelagos-node-carrier.kicad_pcb')
-SCH = os.path.join(PROJ, 'pelagos-node-carrier.kicad_sch')
+PCB = os.path.join(PROJ, 'acoustic-swarm-node.kicad_pcb')
+SCH = os.path.join(PROJ, 'acoustic-swarm-node.kicad_sch')
 
 LAYERS = 'F.Cu,B.Cu,F.Paste,B.Paste,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts'
 
@@ -37,7 +37,7 @@ def gerbers():
         '--subtract-soldermask', PCB)
     cli('pcb', 'export', 'drill', '-o', gdir + '/', '--format', 'excellon',
         '--excellon-separate-th', '--generate-map', '--map-format', 'gerberx2', PCB)
-    zpath = os.path.join(OUT, 'pelagos-node-carrier-revA-gerber.zip')
+    zpath = os.path.join(OUT, 'acoustic-swarm-node-revA-gerber.zip')
     with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(gdir)):
             z.write(os.path.join(gdir, f), f)
@@ -46,7 +46,7 @@ def gerbers():
 
 
 def positions():
-    path = os.path.join(OUT, 'pelagos-node-carrier-revA-pos.csv')
+    path = os.path.join(OUT, 'acoustic-swarm-node-revA-pos.csv')
     cli('pcb', 'export', 'pos', '-o', path, '--format', 'csv', '--units', 'mm',
         '--side', 'both', '--smd-only', PCB)
     return path
@@ -72,7 +72,7 @@ def bom():
         rows.append({'Adet': len(parts), 'Referanslar': ' '.join(refs), 'Deger': value,
                      'Footprint': fp.split(':')[1], 'Parca': mpn, 'Not': '; '.join(notes)})
     rows.sort(key=lambda r: refkey(r['Referanslar'].split()[0]))
-    path = os.path.join(OUT, 'pelagos-node-carrier-revA-bom.csv')
+    path = os.path.join(OUT, 'acoustic-swarm-node-revA-bom.csv')
     with open(path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()
@@ -81,7 +81,7 @@ def bom():
 
 
 def schematic_pdf():
-    path = os.path.join(OUT, 'pelagos-node-carrier-revA-schematic.pdf')
+    path = os.path.join(OUT, 'acoustic-swarm-node-revA-schematic.pdf')
     cli('sch', 'export', 'pdf', '-o', path, SCH)
     return path
 

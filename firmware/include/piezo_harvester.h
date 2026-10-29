@@ -1,9 +1,9 @@
-#ifndef PELAGOS_PIEZO_HARVESTER_H
-#define PELAGOS_PIEZO_HARVESTER_H
+#ifndef ACOUSTIC_NODE_PIEZO_HARVESTER_H
+#define ACOUSTIC_NODE_PIEZO_HARVESTER_H
 
 #include <stdint.h>
 
-namespace pelagos {
+namespace acoustic_node {
 
 enum NodePowerState : uint8_t {
     STATE_DEEP_SLEEP_HARVEST = 0,  // < 15 uA uyku, piezo dalga/akinti enerji hasadi
@@ -54,6 +54,6 @@ private:
     float harvested_mj_;
 };
 
-}  // namespace pelagos
+}  // namespace acoustic_node
 
-#endif  // PELAGOS_PIEZO_HARVESTER_H
+#endif  // ACOUSTIC_NODE_PIEZO_HARVESTER_H

@@ -1,10 +1,10 @@
-#ifndef PELAGOS_ACOUSTIC_DSP_H
-#define PELAGOS_ACOUSTIC_DSP_H
+#ifndef ACOUSTIC_NODE_ACOUSTIC_DSP_H
+#define ACOUSTIC_NODE_ACOUSTIC_DSP_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-namespace pelagos {
+namespace acoustic_node {
 
 constexpr size_t kFftSize = 1024;
 constexpr size_t kDemonFftSize = 256;
@@ -43,6 +43,6 @@ AcousticSignature analyze_hydrophone_frame(
     float sample_rate_hz,
     float friendly_beacon_hz = 380.0f);
 
-}  // namespace pelagos
+}  // namespace acoustic_node
 
-#endif  // PELAGOS_ACOUSTIC_DSP_H
+#endif  // ACOUSTIC_NODE_ACOUSTIC_DSP_H

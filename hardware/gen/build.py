@@ -20,7 +20,6 @@ import export  # noqa: E402
 import finish_pcb  # noqa: E402
 import make_lib  # noqa: E402
 import make_sch  # noqa: E402
-import render  # noqa: E402
 import route_pcb  # noqa: E402
 
 OUT = os.path.normpath(os.path.join(HERE, '..', 'output'))
@@ -49,7 +48,6 @@ def main():
             f.write(f'  {n[0]} -> {n[1]} (istenen {n[2]} mm, cizilen 0.3 mm)\n')
     counts, kinds = finish_pcb.main()
     export.main()
-    render.main()
     if counts['unconnected'] or r.failed:
         sys.exit('bagli olmayan ped var')
 

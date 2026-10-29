@@ -13,13 +13,13 @@ jobs:
       options: --user root
     defaults:
       run:
-        working-directory: hardware/pelagos-node-carrier
+        working-directory: hardware/acoustic-swarm-node
     steps:
       - uses: actions/checkout@v4
       - name: ERC
         run: |
           kicad-cli sch erc --format json --severity-error --exit-code-violations \
-            -o /tmp/erc.json pelagos-node-carrier.kicad_sch && ok=1 || ok=0
+            -o /tmp/erc.json acoustic-swarm-node.kicad_sch && ok=1 || ok=0
           python3 - <<'EOF'
           import json
           d = json.load(open('/tmp/erc.json'))
@@ -33,7 +33,7 @@ jobs:
         run: |
           kicad-cli pcb drc --format json --schematic-parity \
             --severity-error --exit-code-violations \
-            -o /tmp/drc.json pelagos-node-carrier.kicad_pcb > /tmp/drc.log 2>&1 && ok=1 || ok=0
+            -o /tmp/drc.json acoustic-swarm-node.kicad_pcb > /tmp/drc.log 2>&1 && ok=1 || ok=0
           sed 's/^/::notice::kicad-cli: /' /tmp/drc.log | head -20
           python3 - <<'EOF'
           import json, os

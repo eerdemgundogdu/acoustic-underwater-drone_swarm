@@ -1,38 +1,28 @@
-# Pelagos Deniz Tabanı Akustik Düğümü — 2 Katmanlı Taşıyıcı ve AFE Kartı (Rev A)
+# Akustik Suru Dugum Karti (Rev A)
 
-![PCB Önizleme](output/board_preview.png)
+2 katmanli (110x85 mm, FR-4, 1.6 mm, 1 oz bakir) tasiyici ve analog on-uc (AFE) PCB tasarimi.
 
-Bu dizin, otonom deniz tabanı pasif akustik sınıflandırma (LOFAR / DEMON), piezoelektrik dalga/akıntı enerji hasadı ve akustik sürü (swarm) haberleşme düğümü için geliştirilen **110 × 85 mm, 2 katmanlı (FR-4, 1.6 mm, 1 oz Cu)** elektronik kartın tek kaynaklı (`single-source netlist`) tasarımını ve üretime hazır çıktılarını içerir.
+Kart uzerindeki alt devreler:
 
-> **Güvenlik ve Açık Kaynak Kapsam Notu:** Bu depodaki donanım dosyaları yalnızca sivil/akademik su altı akustik sinyal işleme ön-ucunu (AFE), enerji hasadı güç katını ve genel amaçlı sürü (swarm) transdüser/eyleyici sürücü arayüzünü kapsar. Görev özelindeki akustik hedef imza şablonları, saha hidrofon kalibrasyon eğrileri ve birincil eyleyici tetikleme donanımı açık kaynak sürümünden çıkarılmıştır.
+- Piezo hasat / HV tampon girisi (`J1`): 1 A PTC sigorta (`F1`), ters polarite ve geri akim onleyici Schottky (`D1` SS16), cift yonlu TVS (`D2` SMBJ30CA) ve 47 uF depolama kondansatoru (`C1`).
+- Regülator katlari (`U1`, `U2`): `LMR16006X` (700 kHz, 5 V step-down) ve `AP2112K-3.3` (3.3 V dusuk gurultulu analog/sensor LDO). USB ile kart beslemesi arasinda `D4` (B5819W) izolasyonu bulunur.
+- Hidrofon analog girisi (`J2`): 10k/10k gerilim bolucu (`R21`, `R22`), 100 nF anti-aliasing RC filtre (`C11`, kesim frekansi ~318 Hz) ve `BAT54S` ciftli Schottky ADC koruma klempi (`D6`, Pin 16 / A2).
+- I2C sensor hatti (`J3`): 4.7k pull-up (`R17`, `R18`) ve 33 ohm seri hat direncleri (`R19`, `R20`, Pin 18/19).
+- 6 kanal transduser / eyleyici / BFSK modem cikisi (`J5..J10`): 220 ohm seri direnc ve uyku modunda kacak akimi onleyen 100k pull-down.
+- Su sizinti probu (`J4`) ve batarya/hasat gerilim bolucusu (`R26` 68k, `R27` 10k, `D7` BZT52C3V3, Pin 14 ve Pin 15).
+- Manyetik kurma/emniyet anahtari (`J11`) ve kontaktor surucusu (`J12`, `Q2` BCP56-16, `D10` SS16): NC manyetik reed anahtar bobinle seri baglidir; miknatis cekilmeden veya kurma halkasi acikken kontaktor yazilimdan bagimsiz olarak enerjilenemez (`T_KILL_SENSE` Pin 36).
 
----
+## Dosyalar
 
-## Temel Özellikler
+- `DESIGN.md`: Devre hesaplari, filtre kesim frekanslari ve parca secim notlari.
+- `WIRING.md`: Konnektor ve Teensy 4.1 pin baglantilari.
+- `acoustic-swarm-node/`: KiCad 7/9 proje, sematik (`.kicad_sch`) ve PCB (`.kicad_pcb`) dosyalari.
+- `output/`: Gerber + delik arsivi, BOM, dizgi (CPL) CSV, sematik PDF ve DRC raporu.
+- `gen/`: Tek kaynak netlist (`design.py`) uzerinden sematik ve PCB'yi ureten betikler.
 
-| Alt Sistem | Donanım Çözümü | Mühendislik Özelliği |
-|---|---|---|
-| **Piezo Hasat & HV Giriş (`J1`)** | `F1` (1 A PTC), `D1` (`SS16`), `D2` (`SMBJ30CA` TVS), `C1` (47 µF) | Dalga / girdap kaynaklı titreşim (VIV) piezo doğrultucu ve tampon batarya bara koruması |
-| **5 V Anahtarlamalı Regülatör (`U1`)** | `TI LMR16006XDDCR` (700 kHz, SOT-23-6), `L1` (22 µH) | Geniş giriş aralığı (6–30 V), yüksek verimli step-down regülasyon |
-| **3.3 V Düşük Gürültülü AFE LDO (`U2`)** | `Diodes AP2112K-3.3` + `D4` (`B5819W` USB/VIN izolasyonu) | Hidrofon ön-ucu ve MEMS akustik dizi için düşük ripple analog besleme |
-| **Hidrofon Analog Ön-Ucu (`J2`)** | `R21/R22` (`10k/10k`), `C11` (`100 nF` RC filtre), `D6` (`BAT54S`) | $f_c \approx 318\text{ Hz}$ LOFAR/DEMON anti-aliasing ön filtre ve çift yönlü Schottky ADC klempi |
-| **Akustik / Ataletsel Dizi (`J3`)** | 400 kHz I2C (`R17/R18` `4.7 kΩ` pull-up + `R19/R20` `33 Ω` seri) | Yönlü akustik / eğim telafisi sensör hattı, yansıma sönümlemeli |
-| **6× Akustik Dizi / BFSK Modem Çıkışı (`J5..J10`)** | `220 Ω` seri empedans eşleme + `100 kΩ` pull-down | CH0..CH3 akustik dizi/eyleyici, CH4..CH5 ultrasonik BFSK sürü (swarm) modem çıkışı |
-| **Gövde Su Sızıntı Probu (`J4`)** | `R23` (`10 kΩ`), `R24` (`47 kΩ`), `C13` (`100 nF`), `R25` (`1 kΩ`) | Basınç tüpü içi su sızıntısı algılama (kuru: `0 V`, ıslak: `~2.72 V`) |
-| **Manyetik Kurma Anahtarı & Kontaktör (`J11`, `J12`)** | NC manyetik reed anahtar + `Q2` (`BCP56-16`) + `D10` (`SS16`) | Yazılımdan bağımsız donanımsal emniyet kilidi ve `T_KILL_SENSE` geri okuması |
-
----
-
-## Üretim Çıktıları (`hardware/output/`)
-
-- **Şematik PDF:** [`pelagos-node-carrier-revA-schematic.pdf`](output/pelagos-node-carrier-revA-schematic.pdf)
-- **Gerber + Excellon Delik Paketi:** [`pelagos-node-carrier-revA-gerber.zip`](output/pelagos-node-carrier-revA-gerber.zip)
-- **Malzeme Listesi (BOM):** [`pelagos-node-carrier-revA-bom.csv`](output/pelagos-node-carrier-revA-bom.csv)
-- **Dizgi Koordinatları (Pick-and-Place CPL):** [`pelagos-node-carrier-revA-pos.csv`](output/pelagos-node-carrier-revA-pos.csv)
-- **DRC Raporu:** [`drc_report.txt`](output/drc_report.txt) (`0 DRC violations, 0 unconnected pads`)
-
-## Tek Komutla Yeniden Üretim
+Yeniden uretmek icin:
 
 ```bash
-python3 hardware/gen/build.py
+cd hardware/gen
+python3 build.py
 ```

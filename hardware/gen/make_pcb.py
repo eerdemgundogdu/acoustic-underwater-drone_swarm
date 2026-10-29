@@ -14,7 +14,7 @@ import pcbnew  # noqa: E402
 import design  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROJ = os.path.join(HERE, '..', 'pelagos-node-carrier')
+PROJ = os.path.join(HERE, '..', 'acoustic-swarm-node')
 FPDIR = '/usr/share/kicad/footprints'
 
 ORIGIN_X, ORIGIN_Y = 50.0, 50.0
@@ -281,7 +281,7 @@ def keep_inside(board):
             fp.SetPosition(pcbnew.VECTOR2I(p.x + mm(dx), p.y + mm(dy)))
 
 
-def save(board, name='pelagos-node-carrier.kicad_pcb'):
+def save(board, name='acoustic-swarm-node.kicad_pcb'):
     out = os.path.join(PROJ, name)
     board.Save(out)
     return out

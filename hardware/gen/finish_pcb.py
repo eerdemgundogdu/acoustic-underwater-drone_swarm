@@ -142,7 +142,7 @@ def add_labels(board):
                       ('+24V', 'TP1'), ('+5V', 'TP2'),
                       ('+3V3', 'TP3'), ('GND', 'TP4')]:
         L.near(text, ref, size=0.8 if ref.startswith('TP') else 0.9)
-    L.scan('PELAGOS AKUSTIK DUGUM KARTI REV A', 55, 25, 100, 80, size=1.2, bold=True)
+    L.scan('AKUSTIK SURU DUGUM KARTI REV A', 55, 25, 100, 80, size=1.2, bold=True)
     L.scan('PASIF AKUSTIK VE ENERJI HASADI 2026', 55, 25, 100, 80, size=1.0)
     L.scan('Rev A: uretilmedi / test edilmedi', 20, 30, 95, 80, size=0.8,
            layer=pcbnew.B_SilkS)
@@ -166,7 +166,7 @@ def main(src=None):
     board = pcbnew.LoadBoard(src)
     add_gnd_zones(board)
     add_labels(board)
-    out = os.path.join(PROJ, 'pelagos-node-carrier.kicad_pcb')
+    out = os.path.join(PROJ, 'acoustic-swarm-node.kicad_pcb')
     board.Save(out)
     board = pcbnew.LoadBoard(out)
     pcbnew.ZONE_FILLER(board).Fill(board.Zones())
@@ -175,8 +175,8 @@ def main(src=None):
     os.makedirs(os.path.dirname(rep), exist_ok=True)
     counts, kinds = run_drc(board, rep)
     with open(rep) as f:
-        txt = f.read().replace(out, 'pelagos-node-carrier.kicad_pcb')
-    txt = txt.replace(os.path.normpath(out), 'pelagos-node-carrier.kicad_pcb')
+        txt = f.read().replace(out, 'acoustic-swarm-node.kicad_pcb')
+    txt = txt.replace(os.path.normpath(out), 'acoustic-swarm-node.kicad_pcb')
     with open(rep, 'w') as f:
         f.write(txt)
     print(out)

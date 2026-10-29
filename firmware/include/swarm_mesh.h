@@ -1,10 +1,10 @@
-#ifndef PELAGOS_SWARM_MESH_H
-#define PELAGOS_SWARM_MESH_H
+#ifndef ACOUSTIC_NODE_SWARM_MESH_H
+#define ACOUSTIC_NODE_SWARM_MESH_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-namespace pelagos {
+namespace acoustic_node {
 
 constexpr uint8_t kSwarmSyncByte1 = 0xA5;
 constexpr uint8_t kSwarmSyncByte2 = 0x5A;
@@ -73,6 +73,6 @@ private:
     size_t dedup_head_;
 };
 
-}  // namespace pelagos
+}  // namespace acoustic_node
 
-#endif  // PELAGOS_SWARM_MESH_H
+#endif  // ACOUSTIC_NODE_SWARM_MESH_H

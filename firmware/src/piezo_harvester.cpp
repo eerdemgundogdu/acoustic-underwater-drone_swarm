@@ -2,7 +2,7 @@
 
 #include <math.h>
 
-namespace pelagos {
+namespace acoustic_node {
 
 uint8_t PiezoHarvesterFSM::soc_percent() const {
     if (v_bus_ <= cfg_.v_min_sleep) return 0;
@@ -83,4 +83,4 @@ NodePowerState PiezoHarvesterFSM::step(float dt_sec,
     return state_;
 }
 
-}  // namespace pelagos
+}  // namespace acoustic_node

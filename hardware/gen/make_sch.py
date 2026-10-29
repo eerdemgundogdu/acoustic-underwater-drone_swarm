@@ -20,7 +20,7 @@ from kiutils.symbol import SymbolLib
 import design
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROJ = os.path.join(HERE, '..', 'pelagos-node-carrier')
+PROJ = os.path.join(HERE, '..', 'acoustic-swarm-node')
 SYMDIR = '/usr/share/kicad/symbols'
 GRID = 2.54
 
@@ -133,7 +133,7 @@ def build():
     sch = Schematic.create_new()
     sch.paper = PageSettings(paperSize='A2')
     sch.titleBlock = TitleBlock()
-    sch.titleBlock.title = 'Pelagos Deniz Tabani Akustik Dugum Karti'
+    sch.titleBlock.title = 'Akustik Suru Dugum Karti'
     sch.titleBlock.revision = 'A'
     sch.titleBlock.date = '2026-10-29'
     sch.titleBlock.company = 'CU AVTECH — Stingray Sualti Sistemleri'
@@ -251,7 +251,7 @@ def build():
 
     sch.libSymbols = list(lib_syms.values())
     sch.sheetInstances = [HierarchicalSheetInstance(instancePath='/', page='1')]
-    out = os.path.join(PROJ, 'pelagos-node-carrier.kicad_sch')
+    out = os.path.join(PROJ, 'acoustic-swarm-node.kicad_sch')
     sch.to_file(out)
     return out
 
