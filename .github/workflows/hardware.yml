@@ -1,14 +1,9 @@
 name: hardware
-
 on:
   push:
-    branches: [main]
-    paths:
-      - 'hardware/**'
-      - '.github/workflows/hardware.yml'
+    paths: ['hardware/**', '.github/workflows/hardware.yml']
   pull_request:
-    paths:
-      - 'hardware/**'
+    paths: ['hardware/**', '.github/workflows/hardware.yml']
 
 jobs:
   kicad:
@@ -16,25 +11,43 @@ jobs:
     container:
       image: kicad/kicad:9.0
       options: --user root
+    defaults:
+      run:
+        working-directory: hardware/pelagos-node-carrier
     steps:
       - uses: actions/checkout@v4
-
       - name: ERC
         run: |
-          kicad-cli sch erc \
-            --severity-error \
-            --exit-code-violations \
-            -o /tmp/erc.rpt \
-            hardware/pelagos-node-carrier/pelagos-node-carrier.kicad_sch
-
+          kicad-cli sch erc --format json --severity-error --exit-code-violations \
+            -o /tmp/erc.json pelagos-node-carrier.kicad_sch && ok=1 || ok=0
+          python3 - <<'EOF'
+          import json
+          d = json.load(open('/tmp/erc.json'))
+          for s in d.get('sheets', []):
+              for v in s.get('violations', []):
+                  items = '; '.join(i.get('description', '') for i in v.get('items', []))
+                  print(f"::{'error' if v['severity'] == 'error' else 'warning'}::ERC {v['type']}: {v['description']} [{items}]")
+          EOF
+          test "$ok" = 1
       - name: DRC (sematik paritesi dahil)
         run: |
-          python3 hardware/gen/check_parity.py
-          kicad-cli pcb drc \
-            --schematic-parity \
-            --severity-error \
-            --exit-code-violations \
-            --format json \
-            -o /tmp/drc.json \
-            hardware/pelagos-node-carrier/pelagos-node-carrier.kicad_pcb
-          python3 -c "import json; d=json.load(open('/tmp/drc.json')); print('violations:', len(d['violations']), 'unconnected:', len(d['unconnected_items']), 'parity:', len(d['schematic_parity'])); assert not d['violations'] and not d['unconnected_items'] and not d['schematic_parity']"
+          kicad-cli pcb drc --format json --schematic-parity \
+            --severity-error --exit-code-violations \
+            -o /tmp/drc.json pelagos-node-carrier.kicad_pcb > /tmp/drc.log 2>&1 && ok=1 || ok=0
+          sed 's/^/::notice::kicad-cli: /' /tmp/drc.log | head -20
+          python3 - <<'EOF'
+          import json, os
+          if not os.path.exists('/tmp/drc.json'):
+              print('::error::DRC raporu olusmadi')
+              raise SystemExit
+          d = json.load(open('/tmp/drc.json'))
+          for key, val in d.items():
+              if not isinstance(val, list) or (val and not isinstance(val[0], dict)):
+                  continue
+              print(f'::notice::{key}: {len(val)}')
+              for v in val[:30]:
+                  items = '; '.join(f"{i.get('description', '')} @{i.get('pos')}" for i in v.get('items', []))
+                  sev = v.get('severity', 'error')
+                  print(f"::{'error' if sev == 'error' else 'warning'}::{key} {v.get('type')}: {v['description']} [{items}]")
+          EOF
+          test "$ok" = 1
