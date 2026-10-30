@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.py text eol=lf
+*.kicad_pcb text eol=lf
+*.kicad_sch text eol=lf

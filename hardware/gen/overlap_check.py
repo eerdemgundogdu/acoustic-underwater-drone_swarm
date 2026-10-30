@@ -3,8 +3,7 @@ import itertools
 import os
 import sys
 
-os.environ.setdefault("KICAD7_FOOTPRINT_DIR", "/usr/share/kicad/footprints")
-os.environ.setdefault("KICAD7_SYMBOL_DIR", "/usr/share/kicad/symbols")
+import kicad_env  # noqa: F401
 import pcbnew  # noqa: E402
 
 

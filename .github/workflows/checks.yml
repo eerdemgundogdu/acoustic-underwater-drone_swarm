@@ -1,47 +1,53 @@
 name: checks
-
-on:
-  push:
-    branches: [main]
-  pull_request:
+on: [push, pull_request]
 
 jobs:
-  dsp-python-tests:
+  python:
+    # Bilesen degerleri (hardware/gen/design.py) <-> firmware sabitleri <-> tasarim hedefleri
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Install numpy
+          python-version: "3.11"
+      - name: Syntax check
+        run: python -m compileall -q dsp scripts hardware/gen/design.py
+      - name: Install test deps
         run: pip install numpy
-      - name: Run LOFAR/DEMON & Piezo Swarm tests
-        run: python3 dsp/test_acoustic_pipeline.py
+      - name: AFE, uyku akimi ve baglanti butcesi modeli
+        run: python dsp/test_node_model.py
 
   firmware-host-tests:
+    # Arduino'dan bagimsiz firmware modulleri (LOFAR/DEMON, BFSK modem, mesh, guc FSM)
+    # host'ta -Werror ve ASan/UBSan ile test edilir.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Configure C++ host tests
+      - name: Configure
         run: cmake -S firmware/test -B build/test
-      - name: Build C++ host tests
-        run: cmake --build build/test
-      - name: Run C++ host tests
+      - name: Build
+        run: cmake --build build/test -j
+      - name: Test
         run: ctest --test-dir build/test --output-on-failure
 
   firmware-build:
+    # Teensy 4.1 icin kart (node) ve tezgah (bench) firmware'lerini derler.
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [node, bench]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-pelagos-v1
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
       - name: Install PlatformIO
         run: pip install platformio
-      - name: Build Cortex-M7 / Teensy 4.1 acoustic node firmware
+      - name: Build ${{ matrix.env }}
         working-directory: firmware
-        run: pio run -e teensy41_acoustic_node
+        run: pio run -e ${{ matrix.env }}

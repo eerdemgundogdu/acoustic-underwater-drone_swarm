@@ -1,3 +1,3 @@
 (fp_lib_table
-  (lib (name "stingray")(type "KiCad")(uri "${KIPRJMOD}/stingray.pretty")(options "")(descr "Stingray ROV proje footprintleri"))
+  (lib (name "acoustic")(type "KiCad")(uri "${KIPRJMOD}/acoustic.pretty")(options "")(descr "Akustik suru dugumu proje footprintleri"))
 )

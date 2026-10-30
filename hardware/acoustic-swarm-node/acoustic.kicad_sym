@@ -1,8 +1,8 @@
-(kicad_symbol_lib (version 20220914) (generator stingray_make_lib)
+(kicad_symbol_lib (version 20220914) (generator acoustic_make_lib)
   (symbol "Teensy4.1" (in_bom yes) (on_board yes)
     (property "Reference" "U" (at 0 34.29 0) (effects (font (size 1.27 1.27))))
     (property "Value" "Teensy4.1" (at 0 -34.29 0) (effects (font (size 1.27 1.27))))
-    (property "Footprint" "stingray:Teensy4.1_Socket" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+    (property "Footprint" "acoustic:Teensy4.1_Socket" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
     (property "Datasheet" "https://www.pjrc.com/store/teensy41.html" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
     (property "ki_description" "PJRC Teensy 4.1, dis iki pin sirasi (ust gorunus, USB yukarida)" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
     (symbol "Teensy4.1_0_1"

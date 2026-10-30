@@ -7,3 +7,7 @@ hardware/acoustic-swarm-node/fp-info-cache
 hardware/acoustic-swarm-node/*.lck
 hardware/acoustic-swarm-node/placement.kicad_pcb
 hardware/acoustic-swarm-node/routed.kicad_pcb
+hardware/acoustic-swarm-node/placement.kicad_p*
+hardware/acoustic-swarm-node/routed.kicad_p*
+hardware/output/netlist.xml
+hardware/output/erc.json

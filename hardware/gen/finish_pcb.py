@@ -5,10 +5,10 @@
 
 import os
 import re
+import subprocess
 import sys
 
-os.environ.setdefault("KICAD7_FOOTPRINT_DIR", "/usr/share/kicad/footprints")
-os.environ.setdefault("KICAD7_SYMBOL_DIR", "/usr/share/kicad/symbols")
+import kicad_env
 import pcbnew  # noqa: E402
 
 import make_pcb  # noqa: E402
@@ -27,9 +27,11 @@ def add_gnd_zones(board):
     # Teensy soket GND pinleri: iki sira arasindaki ust katman dokumu kucuk adalara
     # bolunuyor; termal kollar bu adalara dusunce KiCad 9 "starved_thermal" verir.
     # Bu pinlerde dokume tam (solid) baglanti kullan.
-    for pad in board.FindFootprintByReference('U3').Pads():
-        if pad.GetNetname() == 'GND':
-            pad.SetZoneConnection(pcbnew.ZONE_CONNECTION_FULL)
+    # DRV8871 (U10) acik pedi ve termal via'lari hem isi hem akim tasir: tam baglanti.
+    for ref in ('U7', 'U10'):
+        for pad in board.FindFootprintByReference(ref).Pads():
+            if pad.GetNetname() == 'GND':
+                pad.SetLocalZoneConnection(pcbnew.ZONE_CONNECTION_FULL)
     for layer in (pcbnew.F_Cu, pcbnew.B_Cu):
         z = pcbnew.ZONE(board)
         z.SetLayer(layer)
@@ -133,24 +135,25 @@ class Labeler:
 
 def add_labels(board):
     L = Labeler(board)
-    for text, ref in [('ARM-SW', 'J11'), ('KONTAKTOR', 'J12')]:
+    for text, ref in [('PIEZO', 'J3'), ('SIZINTI', 'J6'), ('TX', 'J5'), ('HIDROFON', 'J4')]:
         if L.beside(text, ref, size=0.8, quiet=True) is None:
             L.near(text, ref, size=0.8)
-    for text, ref in [('PIEZO/HV', 'J1'), ('HIDROFON', 'J2'), ('AFE-I2C', 'J3'), ('SIZINTI', 'J4'),
-                      ('CH0', 'J5'), ('CH1', 'J6'), ('CH2', 'J7'), ('CH3', 'J8'),
-                      ('CH4', 'J9'), ('CH5', 'J10'),
-                      ('+24V', 'TP1'), ('+5V', 'TP2'),
-                      ('+3V3', 'TP3'), ('GND', 'TP4')]:
+    for text, ref in [('4S LI-ION', 'J1'), ('ARM-SW', 'J2'),
+                      ('VSYS', 'TP1'), ('+5V', 'TP2'), ('+3V3A', 'TP3'), ('GND', 'TP4'),
+                      ('AON', 'TP5'), ('VREF', 'TP6')]:
         L.near(text, ref, size=0.8 if ref.startswith('TP') else 0.9)
-    L.scan('AKUSTIK SURU DUGUM KARTI REV A', 55, 25, 100, 80, size=1.2, bold=True)
-    L.scan('PASIF AKUSTIK VE ENERJI HASADI 2026', 55, 25, 100, 80, size=1.0)
+    L.scan('AKUSTIK SURU DUGUMU  REV A', 50, 78, 110, 94, size=1.2, bold=True)
+    L.scan('PASIF SONAR / PIEZO HASAT / BFSK MODEM', 50, 78, 110, 94, size=0.9)
     L.scan('Rev A: uretilmedi / test edilmedi', 20, 30, 95, 80, size=0.8,
            layer=pcbnew.B_SilkS)
 
 
-def run_drc(board, path):
-    pcbnew.WriteDRCReport(board, path, pcbnew.EDA_UNITS_MILLIMETRES, True)
-    txt = open(path).read()
+def run_drc(pcb_path, path):
+    # CI ile ayni denetim: kicad-cli, sematik paritesi dahil
+    subprocess.run([kicad_env.CLI, 'pcb', 'drc', '--format', 'report', '--units', 'mm',
+                    '--schematic-parity', '-o', path, pcb_path],
+                   capture_output=True, text=True)
+    txt = open(path, encoding='utf-8').read()
     counts = {
         'violations': int(re.search(r'\*\* Found (\d+) DRC violations', txt).group(1)),
         'unconnected': int(re.search(r'\*\* Found (\d+) unconnected pads', txt).group(1)),
@@ -173,11 +176,11 @@ def main(src=None):
     board.Save(out)
     rep = os.path.join(PROJ, '..', 'output', 'drc_report.txt')
     os.makedirs(os.path.dirname(rep), exist_ok=True)
-    counts, kinds = run_drc(board, rep)
-    with open(rep) as f:
+    counts, kinds = run_drc(out, rep)
+    with open(rep, encoding='utf-8') as f:
         txt = f.read().replace(out, 'acoustic-swarm-node.kicad_pcb')
     txt = txt.replace(os.path.normpath(out), 'acoustic-swarm-node.kicad_pcb')
-    with open(rep, 'w') as f:
+    with open(rep, 'w', encoding='utf-8') as f:
         f.write(txt)
     print(out)
     print('DRC:', counts, kinds)

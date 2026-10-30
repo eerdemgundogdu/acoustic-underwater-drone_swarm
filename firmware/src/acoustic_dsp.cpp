@@ -7,6 +7,36 @@ namespace acoustic_node {
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
+
+// Iki FFT islemcisi tek is parcaciginda calistigi icin ortak calisma alani yeterli
+float g_re[kLofarFftSize > kDemonFftSize ? kLofarFftSize : kDemonFftSize];
+float g_im[kLofarFftSize > kDemonFftSize ? kLofarFftSize : kDemonFftSize];
+float g_snr[(kLofarFftSize > kDemonFftSize ? kLofarFftSize : kDemonFftSize) / 2];
+float g_mag[(kLofarFftSize > kDemonFftSize ? kLofarFftSize : kDemonFftSize) / 2];
+
+float to_db(float lin) { return 10.0f * log10f(lin > 1e-6f ? lin : 1e-6f); }
+
+// Ucuncu dereceden tepe kaydirmasi: komsu kutulardan parabolik interpolasyon [-0.5, 0.5]
+float parabolic_offset(const float* mag, size_t k, size_t n) {
+    if (k == 0 || k + 1 >= n) return 0.0f;
+    const float a = mag[k - 1], b = mag[k], c = mag[k + 1];
+    const float den = a - 2.0f * b + c;
+    if (fabsf(den) < 1e-20f) return 0.0f;
+    float d = 0.5f * (a - c) / den;
+    if (d > 0.5f) d = 0.5f;
+    if (d < -0.5f) d = -0.5f;
+    return d;
+}
+
+// Hanning + FFT + |X|^2 (ilk n/2 kutu) -> g_mag
+void power_spectrum(const float* frame, size_t n) {
+    apply_hanning_zero_dc(frame, g_re, n);
+    memset(g_im, 0, n * sizeof(float));
+    fft_radix2(g_re, g_im, n);
+    for (size_t k = 0; k < n / 2; ++k) {
+        g_mag[k] = g_re[k] * g_re[k] + g_im[k] * g_im[k];
+    }
+}
 }  // namespace
 
 void fft_radix2(float* re, float* im, size_t n) {
@@ -26,32 +56,25 @@ void fft_radix2(float* re, float* im, size_t n) {
     }
 
     // Kelebek (butterfly) kademeleri
-    for (size_t s = 1; (1ULL << s) <= n; ++s) {
-        size_t m = 1ULL << s;
-        size_t half = m >> 1;
-        float theta = -2.0f * kPi / static_cast<float>(m);
-        float w_m_r = cosf(theta);
-        float w_m_i = sinf(theta);
-
+    for (size_t m = 2; m <= n; m <<= 1) {
+        const size_t half = m >> 1;
+        const float theta = -2.0f * kPi / static_cast<float>(m);
         for (size_t k = 0; k < n; k += m) {
-            float w_r = 1.0f;
-            float w_i = 0.0f;
-            for (size_t m_idx = 0; m_idx < half; ++m_idx) {
-                size_t t_idx = k + m_idx + half;
-                size_t u_idx = k + m_idx;
-                float t_r = w_r * re[t_idx] - w_i * im[t_idx];
-                float t_i = w_r * im[t_idx] + w_i * re[t_idx];
-                float u_r = re[u_idx];
-                float u_i = im[u_idx];
+            for (size_t i = 0; i < half; ++i) {
+                // Twiddle her adimda dogrudan hesaplanir; tekrarli carpimin
+                // 1024 noktada biriktirdigi faz hatasi olmaz.
+                const float w_r = cosf(theta * static_cast<float>(i));
+                const float w_i = sinf(theta * static_cast<float>(i));
+                const size_t t_idx = k + i + half;
+                const size_t u_idx = k + i;
+                const float t_r = w_r * re[t_idx] - w_i * im[t_idx];
+                const float t_i = w_r * im[t_idx] + w_i * re[t_idx];
+                const float u_r = re[u_idx];
+                const float u_i = im[u_idx];
                 re[u_idx] = u_r + t_r;
                 im[u_idx] = u_i + t_i;
                 re[t_idx] = u_r - t_r;
                 im[t_idx] = u_i - t_i;
-
-                float next_wr = w_r * w_m_r - w_i * w_m_i;
-                float next_wi = w_r * w_m_i + w_i * w_m_r;
-                w_r = next_wr;
-                w_i = next_wi;
             }
         }
     }
@@ -66,7 +89,7 @@ void apply_hanning_zero_dc(const float* input, float* output, size_t n) {
 
     const float denom = static_cast<float>(n > 1 ? n - 1 : 1);
     for (size_t i = 0; i < n; ++i) {
-        float w = 0.5f * (1.0f - cosf(2.0f * kPi * static_cast<float>(i) / denom));
+        const float w = 0.5f * (1.0f - cosf(2.0f * kPi * static_cast<float>(i) / denom));
         output[i] = (input[i] - mean) * w;
     }
 }
@@ -86,20 +109,20 @@ void cfar_tpsw_whiten(const float* mag_sq, float* snr_linear, size_t n_bins,
                 ++count;
             }
         }
-        float local_mean = (count > 0) ? (sum / static_cast<float>(count)) : 1e-9f;
+        const float local_mean = (count > 0) ? (sum / static_cast<float>(count)) : 1e-9f;
 
-        // Ikinci gecis: tepe degerlerin arka plan kestirimini saptirmasini onle (clipping)
+        // Ikinci gecis: komsu tepelerin gurultu tabani kestirimini sisirmesini onle (clipping)
         float clipped_sum = 0.0f;
         size_t clipped_cnt = 0;
         const float clip_thresh = 2.5f * local_mean;
         for (size_t d = gap_half + 1; d <= window_half; ++d) {
             if (i >= d) {
-                float v = mag_sq[i - d];
+                const float v = mag_sq[i - d];
                 clipped_sum += (v > clip_thresh) ? local_mean : v;
                 ++clipped_cnt;
             }
             if (i + d < n_bins) {
-                float v = mag_sq[i + d];
+                const float v = mag_sq[i + d];
                 clipped_sum += (v > clip_thresh) ? local_mean : v;
                 ++clipped_cnt;
             }
@@ -107,140 +130,187 @@ void cfar_tpsw_whiten(const float* mag_sq, float* snr_linear, size_t n_bins,
         float noise_floor = (clipped_cnt > 0)
                                 ? (clipped_sum / static_cast<float>(clipped_cnt))
                                 : 1e-9f;
-        if (noise_floor < 1e-12f) {
-            noise_floor = 1e-12f;
+        if (noise_floor < 1e-20f) {
+            noise_floor = 1e-20f;
         }
         snr_linear[i] = mag_sq[i] / noise_floor;
     }
 }
 
-AcousticSignature analyze_hydrophone_frame(
-    const float* samples,
-    size_t n_samples,
-    float sample_rate_hz,
-    float friendly_beacon_hz) {
-    AcousticSignature sig = {0.0f, 0.0f, 0.0f, 0.0f, 0, IFF_AMBIENT_NOISE, 0.0f};
-    if (n_samples < kFftSize) {
-        return sig;
+// ----------------------------------------------------------------------------
+// LOFAR
+// ----------------------------------------------------------------------------
+LofarProcessor::LofarProcessor() {
+    dec1_.configure(kAdcSampleRateHz, 2000.0f, 16);
+    dec2_.configure(kAdcSampleRateHz / 16.0f, 700.0f, 6);
+    reset();
+}
+
+void LofarProcessor::reset() {
+    dec1_.reset();
+    dec2_.reset();
+    fill_ = 0;
+    n_avg_ = 0;
+    memset(acc_, 0, sizeof(acc_));
+}
+
+bool LofarProcessor::push(float x) {
+    float y1, y2;
+    if (!dec1_.push(x, &y1)) return false;
+    if (!dec2_.push(y1, &y2)) return false;
+    frame_[fill_++] = y2;
+    if (fill_ < kLofarFftSize) return false;
+    fill_ = 0;
+
+    power_spectrum(frame_, kLofarFftSize);
+    for (size_t k = 0; k < kLofarFftSize / 2; ++k) {
+        acc_[k] += g_mag[k];
     }
+    if (++n_avg_ < kLofarAverages) return false;
+    n_avg_ = 0;
+    analyze();
+    memset(acc_, 0, sizeof(acc_));
+    return true;
+}
 
-    // 1. LOFAR (Dar-bant spektral analiz)
-    float re[kFftSize];
-    float im[kFftSize];
-    apply_hanning_zero_dc(samples, re, kFftSize);
-    memset(im, 0, sizeof(im));
-    fft_radix2(re, im, kFftSize);
+void LofarProcessor::analyze() {
+    const size_t half = kLofarFftSize / 2;
+    cfar_tpsw_whiten(acc_, g_snr, half, 14, 2);
 
-    const size_t half_bins = kFftSize / 2;
-    float mag_sq[half_bins];
-    float snr_lin[half_bins];
-    for (size_t k = 0; k < half_bins; ++k) {
-        mag_sq[k] = re[k] * re[k] + im[k] * im[k];
+    const float bin_hz = dec2_.fs_out() / static_cast<float>(kLofarFftSize);
+    size_t k0 = static_cast<size_t>(ceilf(kLofarMinHz / bin_hz));
+    size_t k1 = static_cast<size_t>(floorf(kLofarMaxHz / bin_hz));
+    if (k1 >= half - 1) k1 = half - 2;
+
+    size_t best = k0;
+    for (size_t k = k0; k <= k1; ++k) {
+        if (g_snr[k] > g_snr[best]) best = k;
     }
-    cfar_tpsw_whiten(mag_sq, snr_lin, half_bins, 14, 2);
+    const float d = parabolic_offset(acc_, best, half);
+    result_.peak_hz = (static_cast<float>(best) + d) * bin_hz;
+    result_.peak_snr_db = to_db(g_snr[best]);
+}
 
-    const float bin_hz = sample_rate_hz / static_cast<float>(kFftSize);
-    size_t min_bin = static_cast<size_t>(12.0f / bin_hz);
-    if (min_bin < 2) min_bin = 2;
+// ----------------------------------------------------------------------------
+// DEMON
+// ----------------------------------------------------------------------------
+DemonProcessor::DemonProcessor() {
+    hp_.set_highpass(kAdcSampleRateHz, kDemonBandLoHz);
+    lp_.set_lowpass(kAdcSampleRateHz, kDemonBandHiHz);
+    box_.configure(64);
+    dec_.configure(kAdcSampleRateHz / 64.0f, 150.0f, 8);
+    reset();
+}
 
-    size_t best_bin = min_bin;
+void DemonProcessor::reset() {
+    hp_.reset();
+    lp_.reset();
+    box_.reset();
+    dec_.reset();
+    fill_ = 0;
+}
+
+bool DemonProcessor::push(float x) {
+    const float band = lp_.process(hp_.process(x));
+    float e1, e2;
+    if (!box_.push(band * band, &e1)) return false;
+    if (!dec_.push(e1, &e2)) return false;
+    frame_[fill_++] = e2;
+    if (fill_ < kDemonFftSize) return false;
+    fill_ = 0;
+    analyze();
+    return true;
+}
+
+void DemonProcessor::analyze() {
+    const size_t half = kDemonFftSize / 2;
+    power_spectrum(frame_, kDemonFftSize);
+    cfar_tpsw_whiten(g_mag, g_snr, half, 10, 1);
+
+    const float bin_hz = dec_.fs_out() / static_cast<float>(kDemonFftSize);
+    size_t s0 = static_cast<size_t>(ceilf(kShaftMinHz / bin_hz));
+    size_t s1 = static_cast<size_t>(floorf(kShaftMaxHz / bin_hz));
+    if (s1 >= half - 1) s1 = half - 2;
+
+    size_t shaft = s0;
+    for (size_t k = s0; k <= s1; ++k) {
+        if (g_snr[k] > g_snr[shaft]) shaft = k;
+    }
+    const float shaft_bin_f = static_cast<float>(shaft) + parabolic_offset(g_mag, shaft, half);
+
+    result_ = DemonResult();
+    result_.shaft_hz = shaft_bin_f * bin_hz;
+    result_.shaft_snr_db = to_db(g_snr[shaft]);
+
+    // N = 3..7 kanat: N * f_shaft civarinda (+-1 kutu) en guclu cizgi
     float best_snr = 0.0f;
-    for (size_t k = min_bin; k < half_bins - 2; ++k) {
-        if (snr_lin[k] > best_snr) {
-            best_snr = snr_lin[k];
-            best_bin = k;
-        }
-    }
-    sig.lofar_peak_hz = static_cast<float>(best_bin) * bin_hz;
-    sig.lofar_snr_db = 10.0f * log10f(best_snr > 1e-6f ? best_snr : 1e-6f);
-
-    // 2. DEMON (Yuksek frekans kavitasyon tasiyicisinin zarf demodulasyonu)
-    // 1. derece yuksek geciren fark filtresi + tam dalga dogrultma + 4x desimasyon
-    constexpr size_t kDecim = 4;
-    float env[kDemonFftSize];
-    float env_im[kDemonFftSize];
-    for (size_t i = 0; i < kDemonFftSize; ++i) {
-        float acc = 0.0f;
-        for (size_t m = 0; m < kDecim; ++m) {
-            size_t idx = i * kDecim + m;
-            if (idx > 0 && idx < kFftSize) {
-                float hp = samples[idx] - samples[idx - 1];
-                acc += fabsf(hp);
-            }
-        }
-        env[i] = acc / static_cast<float>(kDecim);
-    }
-
-    float env_win[kDemonFftSize];
-    apply_hanning_zero_dc(env, env_win, kDemonFftSize);
-    memset(env_im, 0, sizeof(env_im));
-    fft_radix2(env_win, env_im, kDemonFftSize);
-
-    const float demon_fs = sample_rate_hz / static_cast<float>(kDecim);
-    const float demon_bin_hz = demon_fs / static_cast<float>(kDemonFftSize);
-    const size_t demon_half = kDemonFftSize / 2;
-
-    float demon_mag[demon_half];
-    float demon_snr[demon_half];
-    for (size_t k = 0; k < demon_half; ++k) {
-        demon_mag[k] = env_win[k] * env_win[k] + env_im[k] * env_im[k];
-    }
-    cfar_tpsw_whiten(demon_mag, demon_snr, demon_half, 8, 1);
-
-    // Saft frekansi arama bandi: [2.5 Hz .. 11.5 Hz]
-    size_t shaft_b0 = static_cast<size_t>(ceilf(2.5f / demon_bin_hz));
-    size_t shaft_b1 = static_cast<size_t>(floorf(11.5f / demon_bin_hz));
-    if (shaft_b0 < 1) shaft_b0 = 1;
-    if (shaft_b1 >= demon_half) shaft_b1 = demon_half - 1;
-
-    size_t shaft_bin = shaft_b0;
-    float shaft_max = 0.0f;
-    for (size_t k = shaft_b0; k <= shaft_b1; ++k) {
-        if (demon_mag[k] > shaft_max) {
-            shaft_max = demon_mag[k];
-            shaft_bin = k;
-        }
-    }
-    sig.shaft_rate_hz = static_cast<float>(shaft_bin) * demon_bin_hz;
-
-    // Kanat gecis frekansi (Blade Pass Frequency) arama: N = 3..7 kanat harmonikleri
-    uint8_t best_blades = 0;
-    float best_blade_mag = 0.0f;
-    size_t best_blade_bin = shaft_bin;
-    for (uint8_t n_b = 3; n_b <= 7; ++n_b) {
-        size_t b_idx = shaft_bin * n_b;
-        if (b_idx < demon_half) {
-            if (demon_mag[b_idx] > best_blade_mag) {
-                best_blade_mag = demon_mag[b_idx];
-                best_blades = n_b;
-                best_blade_bin = b_idx;
+    size_t best_bin = 0;
+    uint8_t best_n = 0;
+    for (uint8_t n = 3; n <= 7; ++n) {
+        const size_t c = static_cast<size_t>(lroundf(shaft_bin_f * static_cast<float>(n)));
+        for (size_t k = (c > 0 ? c - 1 : 0); k <= c + 1 && k < half; ++k) {
+            if (g_snr[k] > best_snr) {
+                best_snr = g_snr[k];
+                best_bin = k;
+                best_n = n;
             }
         }
     }
-    sig.blade_rate_hz = static_cast<float>(best_blade_bin) * demon_bin_hz;
-    sig.estimated_blades = best_blades;
+    result_.blade_snr_db = to_db(best_snr);
+    // Beyazlatilmis gurultu gucu ustel dagilir: tek kutuda P(> 10 dB) = e^-10 = 4.5e-5.
+    // 15 aday kutu (5 harmonik x 3) icin yanlis alarm ~7e-4; 6 dB esik %24 verirdi.
+    if (best_n != 0 && result_.blade_snr_db >= 10.0f && result_.shaft_snr_db >= 6.0f) {
+        result_.blades = best_n;
+        result_.blade_hz = (static_cast<float>(best_bin) + parabolic_offset(g_mag, best_bin, half)) *
+                           bin_hz;
+    }
+}
 
-    // 3. Akustik IFF Karar Mantigi (Sanitized / Sentetik Profil Siniflandirici)
-    if (sig.lofar_snr_db < 8.0f) {
+// ----------------------------------------------------------------------------
+// IFF karari
+// ----------------------------------------------------------------------------
+AcousticSignature classify_signature(const LofarResult& lofar, const DemonResult& demon,
+                                     float friendly_beacon_hz) {
+    AcousticSignature sig;
+    sig.lofar = lofar;
+    sig.demon = demon;
+
+    if (lofar.peak_snr_db < 8.0f && demon.blades == 0) {
         sig.iff_class = IFF_AMBIENT_NOISE;
         sig.confidence = 0.90f;
         return sig;
     }
 
-    // Dost su alti araci (UUV): 3 kanatli pervane + dost akustik pilot tonali
-    bool beacon_match = fabsf(sig.lofar_peak_hz - friendly_beacon_hz) <= (2.5f * bin_hz);
-    if (beacon_match && best_blades == 3) {
+    const float lofar_bin_hz = 2000.0f / static_cast<float>(kLofarFftSize);
+    const bool beacon_match = lofar.peak_snr_db >= 8.0f &&
+                              fabsf(lofar.peak_hz - friendly_beacon_hz) <= 2.5f * lofar_bin_hz;
+    if (beacon_match && demon.blades == 3) {
         sig.iff_class = IFF_FRIENDLY_UUV;
-        sig.confidence = fminf(0.99f, sig.lofar_snr_db / 25.0f);
-    } else if (best_blades >= 5 && demon_snr[best_blade_bin] > 4.0f) {
-        // 5+ kanatli agir pervane kavitasyon modülasyonu -> Dusman/Hedef su ustu/alti izi
+        sig.confidence = fminf(0.99f, lofar.peak_snr_db / 25.0f);
+    } else if (demon.blades >= 5) {
         sig.iff_class = IFF_HOSTILE_TRACK;
-        sig.confidence = fminf(0.99f, (sig.lofar_snr_db + 10.0f) / 30.0f);
+        sig.confidence = fminf(0.99f, (demon.blade_snr_db + 10.0f) / 30.0f);
     } else {
         sig.iff_class = IFF_UNKNOWN_TONAL;
         sig.confidence = 0.60f;
     }
     return sig;
+}
+
+// ----------------------------------------------------------------------------
+// Cift kazancli AFE
+// ----------------------------------------------------------------------------
+float DualGainSelector::convert(uint16_t lo_counts, uint16_t hi_counts) {
+    const bool hi_clipped = hi_counts < kClipMargin || hi_counts > 4095 - kClipMargin;
+    if (hi_clipped) {
+        hold_ = kHoldSamples;
+    }
+    constexpr float kLsb = kVref / 4096.0f;
+    if (hold_ > 0) {
+        --hold_;
+        return (static_cast<float>(lo_counts) - 2048.0f) * kLsb / kGainLo;
+    }
+    return (static_cast<float>(hi_counts) - 2048.0f) * kLsb / kGainHi;
 }
 
 }  // namespace acoustic_node

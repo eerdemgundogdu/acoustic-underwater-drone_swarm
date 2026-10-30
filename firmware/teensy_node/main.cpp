@@ -1,159 +1,249 @@
-// Acoustic Swarm Deniz Tabani Akustik Dugumu — Gomulu Cortex-M7 / Teensy 4.1 Firmware
-// Donanim: acoustic-swarm-node Rev A (2 katmanli PCB)
-//   - Pin 16 (A2) : Hidrofon AFE ADC girisi (IntervalTimer 1024 Hz cift tamponlu)
-//   - Pin 15 (A1) : Piezo enerji hasadi / HV tampon gerilim olcumu (68k/10k)
-//   - Pin 14 (A0) : Basinc govdesi su sizinti probu (10k/47k)
-//   - Pin 36      : Manyetik kurma/emniyet reed anahtari (NC) geri okumasi
-//   - Pin 37      : Akustik ping / hata uyari cikisi (BZ1)
-//   - Pin 38      : Eyleyici / modem guc kontaktoru bobin surucusu (Q2 BCP56-16)
-//   - Pin 6..7    : Ultrasonik BFSK akustik suru (swarm) tasiyici cikislari
-//   - Pin 11      : Akustik IFF kilit LED'i (D9)
+// Akustik suru dugumu — Teensy 4.1 (Cortex-M7, 600 MHz) firmware
+// Donanim: acoustic-swarm-node Rev A (hardware/)
+//
+// Akis:
+//   ADC0 (pin 17, AFE HI) + ADC1 (pin 16, AFE LO), 192 kHz zamanlayici tetikli DMA
+//     -> DualGainSelector (kirpilmayan kanal, hidrofon girisine indirgenmis volt)
+//     -> LofarProcessor (dar bant makine tonu, ~2 s)
+//     -> DemonProcessor (pervane saft / kanat, ~2.7 s) -> classify_signature
+//     -> BfskDemodulator (24/28 kHz suru cerceveleri) -> SwarmMeshRouter
+//   PowerManager: PWR_HOLD ile buck'i tutar, dinleme penceresi bitince birakir.
+//   Verici: DRV8871 IN1'de FlexPWM %50 kare dalga; sembol basina frekans degisir.
 
 #include <Arduino.h>
+#include <ADC.h>
+#include <AnalogBufferDMA.h>
 #include <IntervalTimer.h>
 
 #include "acoustic_dsp.h"
-#include "piezo_harvester.h"
+#include "bfsk_modem.h"
+#include "node_config.h"
+#include "power_manager.h"
 #include "swarm_mesh.h"
+
+using namespace acoustic_node;
 
 namespace {
 
-constexpr uint8_t kPinSwarmTx0   = 6;
-constexpr uint8_t kPinSwarmTx1   = 7;
-constexpr uint8_t kPinStatusLed  = 11;
-constexpr uint8_t kPinLeakAdc    = 14;  // A0
-constexpr uint8_t kPinBattAdc    = 15;  // A1
-constexpr uint8_t kPinHydroAdc   = 16;  // A2
-constexpr uint8_t kPinArmSense   = 36;
-constexpr uint8_t kPinPingBuzzer = 37;
-constexpr uint8_t kPinModemEn    = 38;
+constexpr size_t kDmaBuf = 1920;   // 10 ms @ 192 kHz (yarim tampon)
 
-constexpr float kSampleRateHz    = 1024.0f;
-constexpr uint8_t kNodeId        = 0x03;
-constexpr uint32_t kSwarmKey     = 0x50454C41u;  // Demo suru anahtari
+DMAMEM static volatile uint16_t __attribute__((aligned(32))) g_hi_a[kDmaBuf];
+DMAMEM static volatile uint16_t __attribute__((aligned(32))) g_hi_b[kDmaBuf];
+DMAMEM static volatile uint16_t __attribute__((aligned(32))) g_lo_a[kDmaBuf];
+DMAMEM static volatile uint16_t __attribute__((aligned(32))) g_lo_b[kDmaBuf];
 
-// Cift tamponlu (ping-pong) DMA/ISR ses ornekleme dizileri
-volatile float g_adc_buf[2][acoustic_node::kFftSize];
-volatile uint8_t g_active_buf = 0;
-volatile size_t g_sample_idx  = 0;
-volatile bool g_frame_ready   = false;
-volatile uint8_t g_ready_buf  = 0;
+ADC g_adc;
+AnalogBufferDMA g_dma_hi(g_hi_a, kDmaBuf, g_hi_b, kDmaBuf);
+AnalogBufferDMA g_dma_lo(g_lo_a, kDmaBuf, g_lo_b, kDmaBuf);
 
-IntervalTimer g_adc_timer;
-acoustic_node::PiezoHarvesterFSM g_power_fsm;
-acoustic_node::SwarmMeshRouter g_mesh_router(kNodeId, kSwarmKey);
-uint8_t g_seq_counter = 0;
+const uint8_t kSwarmKey[kSwarmKeySize] = {SWARM_KEY_BYTES};
 
-void adc_isr() {
-    int raw = analogRead(kPinHydroAdc);
-    // 12-bit ADC [0..4095] -> [-1.0 .. +1.0] normalize akustik basinc
-    float norm = (static_cast<float>(raw) - 2048.0f) * (1.0f / 2048.0f);
-    uint8_t b = g_active_buf;
-    size_t idx = g_sample_idx;
-    g_adc_buf[b][idx] = norm;
-    ++idx;
-    if (idx >= acoustic_node::kFftSize) {
-        g_ready_buf = b;
-        g_frame_ready = true;
-        g_active_buf = b ^ 1u;
-        g_sample_idx = 0;
-    } else {
-        g_sample_idx = idx;
+DualGainSelector g_gain;
+LofarProcessor g_lofar;
+DemonProcessor g_demon;
+BfskDemodulator g_modem(static_cast<float>(kAdcRateHz));
+SwarmMeshRouter g_router(kNodeId, kSwarmKey);
+PowerManager g_power;
+
+AcousticSignature g_sig;
+bool g_hostile_pending = false;
+float g_batt_v = 0.0f;
+bool g_leak = false;
+uint8_t g_seq = 0;
+uint32_t g_last_housekeeping = 0;
+
+// ---- Verici: kesme ile sembol sembol BFSK -------------------------------------
+IntervalTimer g_tx_timer;
+uint8_t g_tx_bits[kBfskFrameBits];
+volatile size_t g_tx_nbits = 0;
+volatile size_t g_tx_idx = 0;
+volatile bool g_tx_busy = false;
+
+uint8_t g_pending_frame[kSwarmFrameSize];
+bool g_pending = false;
+uint32_t g_pending_at_ms = 0;
+
+void tx_symbol_isr() {
+    if (g_tx_idx >= g_tx_nbits) {
+        analogWrite(kPinTxIn1, 0);
+        g_tx_timer.end();
+        g_tx_busy = false;
+        return;
+    }
+    analogWriteFrequency(kPinTxIn1, g_tx_bits[g_tx_idx] ? kBfskF1Hz : kBfskF0Hz);
+    analogWrite(kPinTxIn1, 128);   // 8 bit cozunurlukte %50
+    ++g_tx_idx;
+}
+
+void start_tx(const uint8_t frame[kSwarmFrameSize]) {
+    g_tx_nbits = bfsk_build_bits(frame, g_tx_bits);
+    g_tx_idx = 0;
+    g_tx_busy = true;
+    // Kendi yayinimiz AFE'yi doyurur: yayin + 20 ms yankida alim kapali
+    g_modem.blank(static_cast<uint32_t>((g_tx_nbits + 20) * kBfskSymbolSamples));
+    g_tx_timer.begin(tx_symbol_isr, 1000);   // 1 ms sembol
+}
+
+// TDMA: kendi yuvamiz gelene kadar beklet
+void schedule_tx(const uint8_t frame[kSwarmFrameSize], uint32_t now) {
+    memcpy(g_pending_frame, frame, kSwarmFrameSize);
+    g_pending = true;
+    g_pending_at_ms = now + g_router.tdma_backoff_ms();
+}
+
+void send_alert(uint32_t now) {
+    SwarmAcousticPacket p{};
+    p.src_node_id = kNodeId;
+    p.seq_num = ++g_seq;
+    p.ttl = kAlertTtl;
+    p.iff_class = static_cast<uint8_t>(g_sig.iff_class);
+    p.blade_count = g_sig.demon.blades;
+    p.lofar_hz_q2 = static_cast<uint16_t>(g_sig.lofar.peak_hz * 4.0f);
+    const float snr_q2 = g_sig.lofar.peak_snr_db * 4.0f;
+    p.snr_db_q2 = static_cast<uint8_t>(snr_q2 < 0 ? 0 : (snr_q2 > 255 ? 255 : snr_q2));
+    p.soc_pct = g_power.soc_percent(g_batt_v);
+    p.flags = static_cast<uint8_t>((digitalReadFast(kPinHarvestPg) ? kFlagHarvestOk : 0) |
+                                   (g_leak ? kFlagLeak : 0));
+    uint8_t frame[kSwarmFrameSize];
+    encode_swarm_frame(p, kSwarmKey, frame);
+    g_router.note_own(p.seq_num);
+    schedule_tx(frame, now);
+}
+
+// ---- ADC ----------------------------------------------------------------------
+void start_sampling() {
+    g_dma_hi.init(&g_adc, ADC_0);
+    g_dma_lo.init(&g_adc, ADC_1);
+    g_adc.adc0->startSingleRead(kPinAdcHi);
+    g_adc.adc1->startSingleRead(kPinAdcLo);
+    // Iki zamanlayici ayni saatten turetilir; tamponlar ayni hizda dolar
+    g_adc.adc0->startTimer(kAdcRateHz);
+    g_adc.adc1->startTimer(kAdcRateHz);
+}
+
+void stop_sampling() {
+    g_adc.adc0->stopTimer();
+    g_adc.adc1->stopTimer();
+}
+
+void configure_adc() {
+    for (ADC_Module* m : {g_adc.adc0, g_adc.adc1}) {
+        m->setAveraging(1);
+        m->setResolution(12);
+        m->setConversionSpeed(ADC_CONVERSION_SPEED::HIGH_SPEED);
+        m->setSamplingSpeed(ADC_SAMPLING_SPEED::HIGH_SPEED);
     }
 }
 
-float read_harvest_voltage() {
-    int raw = analogRead(kPinBattAdc);
-    float v_adc = (static_cast<float>(raw) / 4095.0f) * 3.3f;
-    return v_adc * ((68.0f + 10.0f) / 10.0f);
+// Pil ve sizinti: DMA ornekleme ~0.2 ms durdurulur (5 s'de bir)
+void housekeeping() {
+    stop_sampling();
+    digitalWriteFast(kPinBattEn, HIGH);
+    delayMicroseconds(200);   // 100k/15k + 100 nF yerlesme ~ 5 tau
+    uint32_t acc = 0;
+    for (int i = 0; i < 8; ++i) acc += static_cast<uint32_t>(g_adc.adc0->analogRead(kPinBattAdc));
+    digitalWriteFast(kPinBattEn, LOW);
+    g_batt_v = (static_cast<float>(acc) / 8.0f) * (3.3f / 4096.0f) * kBattDivRatio;
+    g_leak = g_adc.adc0->analogRead(kPinLeakAdc) > kLeakThreshold;
+    start_sampling();
 }
 
-bool read_hull_leak() {
-    int raw = analogRead(kPinLeakAdc);
-    return raw > 1500;  // ~1.2 V ustu su sizintisi
-}
-
-// 16 baytlik akustik paketi BFSK (24 kHz = bit 0, 28 kHz = bit 1) olarak gonder
-void transmit_bfsk_packet(const uint8_t frame[acoustic_node::kSwarmFrameSize]) {
-    digitalWriteFast(kPinModemEn, HIGH);
-    for (size_t i = 0; i < acoustic_node::kSwarmFrameSize; ++i) {
-        uint8_t byte_val = frame[i];
-        for (int b = 7; b >= 0; --b) {
-            bool bit_one = ((byte_val >> b) & 0x01) != 0;
-            analogWriteFrequency(kPinSwarmTx0, bit_one ? 28000.0f : 24000.0f);
-            analogWrite(kPinSwarmTx0, 128);
-            delayMicroseconds(1000);  // 1 kbps akustik sembol suresi
+void process_block(const volatile uint16_t* hi, const volatile uint16_t* lo, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        const float x = g_gain.convert(lo[i], hi[i]);
+        g_lofar.push(x);
+        if (g_demon.push(x)) {
+            g_sig = classify_signature(g_lofar.result(), g_demon.result());
+            if (g_sig.iff_class == IFF_HOSTILE_TRACK) g_hostile_pending = true;
+            Serial.printf("LOFAR %.1f Hz %.1f dB | DEMON %.2f Hz N=%u | IFF %u (%.2f)\n",
+                          g_sig.lofar.peak_hz, g_sig.lofar.peak_snr_db, g_sig.demon.shaft_hz,
+                          g_sig.demon.blades, g_sig.iff_class, g_sig.confidence);
         }
+        g_modem.push(x);
     }
-    analogWrite(kPinSwarmTx0, 0);
-    digitalWriteFast(kPinModemEn, LOW);
+}
+
+bool take_buffers() {
+    if (!g_dma_hi.interrupted() || !g_dma_lo.interrupted()) return false;
+    volatile uint16_t* hi = g_dma_hi.bufferLastISRFilled();
+    volatile uint16_t* lo = g_dma_lo.bufferLastISRFilled();
+    const size_t n = min(g_dma_hi.bufferCountLastISRFilled(), g_dma_lo.bufferCountLastISRFilled());
+    // DMAMEM (OCRAM) onbellekli: CPU okumadan once satirlari gecersiz kil
+    arm_dcache_delete((void*)hi, sizeof(g_hi_a));
+    arm_dcache_delete((void*)lo, sizeof(g_lo_a));
+    process_block(hi, lo, n);
+    g_dma_hi.clearInterrupt();
+    g_dma_lo.clearInterrupt();
+    return true;
 }
 
 }  // namespace
 
 void setup() {
+    // Ilk is: gucu tut. Karsilastirici darbesi + RC mandal ~1 s; acilis ~0.4 s.
+    pinMode(kPinPwrHold, OUTPUT);
+    digitalWriteFast(kPinPwrHold, HIGH);
+
+    pinMode(kPinBattEn, OUTPUT);
+    digitalWriteFast(kPinBattEn, LOW);
+    pinMode(kPinTxIn1, OUTPUT);
+    pinMode(kPinTxIn2, OUTPUT);
+    digitalWriteFast(kPinTxIn1, LOW);
+    digitalWriteFast(kPinTxIn2, LOW);   // DRV8871 uykuda
+    pinMode(kPinLed, OUTPUT);
+    pinMode(kPinWake, INPUT);
+    pinMode(kPinHarvestPg, INPUT);
+
     Serial.begin(115200);
-    analogReadResolution(12);
-    analogReadAveraging(4);
-
-    pinMode(kPinStatusLed, OUTPUT);
-    pinMode(kPinPingBuzzer, OUTPUT);
-    pinMode(kPinModemEn, OUTPUT);
-    pinMode(kPinSwarmTx0, OUTPUT);
-    pinMode(kPinSwarmTx1, OUTPUT);
-    pinMode(kPinArmSense, INPUT);
-
-    digitalWriteFast(kPinModemEn, LOW);
-    digitalWriteFast(kPinPingBuzzer, LOW);
-
-    const float period_us = 1000000.0f / kSampleRateHz;
-    g_adc_timer.begin(adc_isr, period_us);
+    configure_adc();
+    housekeeping();
+    Serial.printf("dugum %u, pil %.2f V, uyanma=%d, hasat=%d\n", kNodeId, g_batt_v,
+                  digitalReadFast(kPinWake), digitalReadFast(kPinHarvestPg));
 }
 
 void loop() {
-    if (!g_frame_ready) {
-        return;
+    const uint32_t now = millis();
+    take_buffers();
+
+    uint8_t rx[kSwarmFrameSize], relay[kSwarmFrameSize];
+    bool rx_activity = false;
+    while (g_modem.pop_frame(rx)) {
+        SwarmAcousticPacket pkt;
+        bool should_relay = false;
+        if (g_router.process_incoming(rx, &pkt, relay, &should_relay)) {
+            rx_activity = true;
+            Serial.printf("RX dugum %u sira %u hop %u IFF %u\n", pkt.src_node_id, pkt.seq_num,
+                          pkt.hop_count, pkt.iff_class);
+            if (should_relay && !g_pending) schedule_tx(relay, now);
+        }
     }
 
-    float local_frame[acoustic_node::kFftSize];
-    noInterrupts();
-    uint8_t buf_idx = g_ready_buf;
-    g_frame_ready = false;
-    for (size_t i = 0; i < acoustic_node::kFftSize; ++i) {
-        local_frame[i] = g_adc_buf[buf_idx][i];
+    if (now - g_last_housekeeping >= kHousekeepingMs && !g_tx_busy) {
+        g_last_housekeeping = now;
+        housekeeping();
     }
-    interrupts();
 
-    float v_bus = read_harvest_voltage();
-    bool leak = read_hull_leak();
-    bool arm_ok = digitalReadFast(kPinArmSense) == HIGH;
+    PowerInputs in;
+    in.now_ms = now;
+    in.wake_cmp = digitalReadFast(kPinWake);
+    in.batt_v = g_batt_v;
+    in.leak = g_leak;
+    in.hostile = g_hostile_pending;
+    in.rx_activity = rx_activity;
+    g_hostile_pending = false;
+    const PowerOutputs out = g_power.step(in);
 
-    g_power_fsm.set_bus_voltage(v_bus);
-    acoustic_node::AcousticSignature sig =
-        acoustic_node::analyze_hydrophone_frame(local_frame, acoustic_node::kFftSize, kSampleRateHz);
-
-    bool wake_trig = sig.lofar_snr_db >= 8.0f;
-    bool hostile = (sig.iff_class == acoustic_node::IFF_HOSTILE_TRACK);
-
-    acoustic_node::NodePowerState st = g_power_fsm.step(
-        1.0f, 12.0f, wake_trig, hostile, arm_ok, leak);
-
-    digitalWriteFast(kPinStatusLed, hostile ? HIGH : LOW);
-
-    if (st == acoustic_node::STATE_SWARM_TX_ALERT) {
-        acoustic_node::SwarmAcousticPacket pkt{};
-        pkt.src_node_id = kNodeId;
-        pkt.seq_num     = ++g_seq_counter;
-        pkt.hop_count   = 0;
-        pkt.ttl         = 3;
-        pkt.iff_class   = static_cast<uint8_t>(sig.iff_class);
-        pkt.blade_count = sig.estimated_blades;
-        pkt.lofar_hz_q2 = static_cast<uint16_t>(sig.lofar_peak_hz * 4.0f);
-        pkt.snr_db_q2   = static_cast<uint8_t>(sig.lofar_snr_db * 4.0f);
-        pkt.soc_pct     = g_power_fsm.soc_percent();
-
-        uint8_t frame[acoustic_node::kSwarmFrameSize];
-        acoustic_node::encode_swarm_frame(pkt, kSwarmKey, frame);
-        transmit_bfsk_packet(frame);
+    if (out.request_alert && !g_pending) send_alert(now);
+    if (g_pending && !g_tx_busy && static_cast<int32_t>(now - g_pending_at_ms) >= 0) {
+        g_pending = false;
+        start_tx(g_pending_frame);
     }
+
+    digitalWriteFast(kPinLed, out.led ? HIGH : LOW);
+    // Yayin surerken gucu birakma
+    bool hold = out.hold_power || g_tx_busy || g_pending;
+#if defined(NODE_BENCH) && NODE_BENCH
+    hold = true;
+#endif
+    digitalWriteFast(kPinPwrHold, hold ? HIGH : LOW);
 }

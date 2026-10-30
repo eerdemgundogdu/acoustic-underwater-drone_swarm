@@ -13,6 +13,8 @@ import numpy as np
 import pcbnew
 from scipy import ndimage
 
+import design
+
 RES = 0.127                     # izgara (mm)
 CLR_RULE = 0.2                  # bakir-bakir bosluk kurali (mm)
 CLR = CLR_RULE + RES * 0.75
@@ -22,16 +24,13 @@ VIA_COST = 2.5                  # mm esdegeri
 BOTTOM_MULT = 1.6               # alt katmani GND duzlemine birakmak icin
 TURN45, TURN90 = 0.15, 0.6      # mm esdegeri donus cezalari
 H_WEIGHT = 1.6                  # agirlikli A*: hedefe yonelir
-MAX_EXPANSIONS = 120_000
+MAX_EXPANSIONS = 600_000         # tam kart aramasi; uzun, via'li dolambaclar icin
 
-WIDTHS = {
-    'VBAT_IN': 0.8, 'VBAT_F': 0.8, '+24V': 0.8, 'BUCK_SW': 0.8,
-    '+5V': 0.6, 'KILL_RET': 0.6, 'COIL_N': 0.6,
-    'GND': 0.3, 'TEENSY_VIN': 0.5, '+3V3': 0.4,
-}
+WIDTHS = design.WIDTHS
 DEFAULT_W = 0.25
 NECK_W = 0.3                    # ince pinlere girerken iz bu genislige iner
 NECK_ZONE = 1.0                 # neck-down'a izin verilen ped cevresi (mm)
+WAYPOINTS = []                  # uzun baglantilar icin koridor ara noktalari (route_pcb atar)
 
 DIRS = [(0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1)]
 LAYERS = [pcbnew.F_Cu, pcbnew.B_Cu]
@@ -129,8 +128,16 @@ class Grid:
                     (ti0, ti1, tj0, tj1), tm = self.pad_mask(pad, shrink=0.05)
                     layers = [li for li, L in enumerate(LAYERS) if pad.IsOnLayer(L)]
                     c = self.to_local(pad.GetPosition())
-                    self.pads.setdefault(net, []).append(
-                        (layers, (ti0, tj0, tm), c, fp.GetReference() + '.' + pad.GetNumber()))
+                    name = fp.GetReference() + '.' + pad.GetNumber()
+                    lst = self.pads.setdefault(net, [])
+                    # Ayni footprint'te ayni numarali pedler (SOT-89 tab'i, termal via'lar)
+                    # fiziksel olarak tek bakirdir: tek hedef say, en buyuk pedi tut.
+                    dup = next((k for k, p in enumerate(lst) if p[3] == name), None)
+                    entry = (layers, (ti0, tj0, tm), c, name)
+                    if dup is None:
+                        lst.append(entry)
+                    elif tm.sum() > lst[dup][1][2].sum():
+                        lst[dup] = entry
 
     def mark_segment(self, li, x0, y0, x1, y1, hw, nid):
         i0, i1, j0, j1 = self._win(min(x0, x1) - hw, min(y0, y1) - hw,
@@ -208,6 +215,7 @@ class Router:
                         tree_pts.append((li, (vx, vy)))
                         tree_cells.add((li, vi, vj))
         ok = True
+        connected = [pads[0]]
         while rest:
             tgt = min(rest, key=lambda p: min(math.dist(p[2], c) for _, c in tree_pts))
             rest.remove(tgt)
@@ -220,6 +228,13 @@ class Router:
                 if path is not None:
                     self.necked.append((net, tgt[3], w))
             if path is None:
+                path, cw = self._reverse(nid, w, tgt, connected, net)
+            if path is None and self._via_waypoint(nid, w, tgt, tree_cells, net):
+                connected.append(tgt)
+                tree_cells |= self._pad_cells(tgt)
+                tree_pts.extend((l, tgt[2]) for l in tgt[0])
+                continue
+            if path is None:
                 self.failed.append((net, tgt[3]))
                 ok = False
                 tree_cells |= self._pad_cells(tgt)
@@ -228,9 +243,68 @@ class Router:
             for (li, i, j) in path:
                 tree_cells.add((li, i, j))
             tree_cells |= self._pad_cells(tgt)
+            connected.append(tgt)
             tree_pts.extend((l, tgt[2]) for l in tgt[0])
             tree_pts.extend((li, (j * RES, i * RES)) for li, i, j in path[::8])
         return ok
+
+    def _waypoint_pad(self, x, y, r_cells=3):
+        """Ara nokta icin iki katmanli kucuk disk seklinde sahte hedef."""
+        i, j = self.g.cell(x, y)
+        tm = disk(r_cells)
+        return ([0, 1], (i - r_cells, j - r_cells, tm), (x, y), f'WP({x:.0f},{y:.0f})')
+
+    def _via_waypoint(self, nid, w, tgt, tree_cells, net):
+        """Uzun baglanti tek aramada bulunamazsa (Teensy pin siralari gibi uzun bir
+        duvarin arkasinda kalinca genisleme siniri dolar) koridor ortasindaki bir
+        ara nokta uzerinden iki parcada ara. Iki parca da bulunursa birlikte cizilir."""
+        for (x, y) in WAYPOINTS:
+            wp = self._waypoint_pad(x, y)
+            for cw in ((w, NECK_W) if w > NECK_W else (w,)):
+                self._blk_cache.clear()
+                p2 = self._astar_win(nid, cw / 2, self._pad_cells(tgt), wp, net, full=True,
+                                     near_pt=tgt[2])
+                if p2 is None:
+                    continue
+                narrow2 = self._narrow
+                p1 = self._astar_win(nid, cw / 2, tree_cells, wp, net, full=True,
+                                     near_pt=(x, y))
+                if p1 is None:
+                    continue
+                self._commit(p1, nid, cw, net, wp)
+                self._narrow = narrow2
+                p2.reverse()
+                self._commit(p2, nid, cw, net, tgt)
+                # Birlesim: p1 ara nokta merkezinde biter; p2'nin basini merkeze bagla,
+                # katmanlar farkliysa merkeze via koy.
+                g = self.g
+                l2, i2, j2 = p2[0]
+                self.tracks.append((l2, j2 * RES, i2 * RES, x, y, cw, net))
+                g.mark_segment(l2, j2 * RES, i2 * RES, x, y, cw / 2, nid)
+                if p1[-1][0] != l2:
+                    self.vias.append((x, y, net))
+                    for li in range(2):
+                        g.mark_segment(li, x, y, x, y, VIA_D / 2, nid)
+                if cw != w:
+                    self.necked.append((net, tgt[3], w))
+                return True
+        return False
+
+    def _reverse(self, nid, w, tgt, connected, net):
+        """Agactan hedefe arama bulamazsa hedeften agactaki en yakin bagli pede ara.
+        Ozel sekilli pedlerde (SOT-89 tab'i) pad merkezi dar bacakta kaldigi icin
+        tek yonlu arama takilabiliyor; ters yonde yaklasim serbest taraftan olur."""
+        for anchor in sorted(connected, key=lambda p: math.dist(p[2], tgt[2]))[:3]:
+            for cw in ((w, NECK_W) if w > NECK_W else (w,)):
+                self._blk_cache.clear()
+                path = self._astar_win(nid, cw / 2, self._pad_cells(tgt), anchor, net,
+                                       full=True, near_pt=tgt[2])
+                if path is not None:
+                    path.reverse()
+                    if cw != w:
+                        self.necked.append((net, tgt[3], w))
+                    return path, cw
+        return None, w
 
     def _pad_cells(self, pad):
         layers, (ti0, tj0, tm), _, _ = pad

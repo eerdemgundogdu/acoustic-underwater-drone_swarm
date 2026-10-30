@@ -1,4 +1,4 @@
-(footprint "Teensy4.1_Socket" (version 20221018) (generator stingray_make_lib)
+(footprint "Teensy4.1_Socket" (version 20221018) (generator acoustic_make_lib)
   (layer "F.Cu")
   (descr "PJRC Teensy 4.1 icin 2x 1x24 disi header (0.6 inch siralar arasi). Pad 1 = sol ust GND, USB ust kenarda.")
   (tags "Teensy 4.1 socket")

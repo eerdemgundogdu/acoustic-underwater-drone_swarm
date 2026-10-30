@@ -6,7 +6,7 @@
 import os
 import time
 
-os.environ.setdefault('KICAD7_FOOTPRINT_DIR', '/usr/share/kicad/footprints')
+import kicad_env  # noqa: F401
 import pcbnew  # noqa: E402
 
 import make_pcb  # noqa: E402
@@ -25,6 +25,7 @@ def get_keepout(board):
 
 
 def attempt(priority, verbose):
+    router.WAYPOINTS = make_pcb.WAYPOINTS
     board = make_pcb.build()
     grid = router.Grid(board, make_pcb.ORIGIN_X, make_pcb.ORIGIN_Y,
                        make_pcb.BOARD_W, make_pcb.BOARD_H, make_pcb.CORNER_R)
@@ -33,8 +34,10 @@ def attempt(priority, verbose):
     order = router.net_order(grid, nets)
     pwr = [n for n in order if n in router.WIDTHS and n != 'GND']
     prio = [n for n in priority if n in order and n not in pwr and n != 'GND']
-    rest = [n for n in order if n not in pwr and n not in prio]
-    order = pwr + prio + rest
+    rest = [n for n in order if n not in pwr and n not in prio and n != 'GND']
+    # GND en son: dikis via'lari sinyallerden kalan bos alana yerlesir, dar
+    # koridorlari (Teensy yani gibi) tikamaz. GND'nin asil baglantisi iki katman dokumdur.
+    order = pwr + prio + rest + ['GND']
     for n in order:
         if n == 'GND':
             r.stitch_count = r.add_stitching('GND', 4.0, get_keepout(board))

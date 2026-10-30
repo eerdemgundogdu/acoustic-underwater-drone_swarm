@@ -1,8 +1,11 @@
 """design.py netlist'inden KiCad sematigi (.kicad_sch) uretir.
 
 Her parca kendi fonksiyon blogunda yerlesir; baglantilar pin uclarina konan
-net etiketleriyle yapilir (tel cizimi yok). Kullanilmayan pinlere
-"no connect" isareti konur.
+global net etiketleriyle yapilir (tel cizimi yok). Global etiket, KiCad netlistinde
+PCB ile ayni net adini verir (yerel etiketler '/NET' olur ve DRC paritesinde
+net_conflict uyarisi uretir). Kullanilmayan pinlere
+"no connect" isareti konur. Cok birimli semboller (cift op-amp, karsilastirici)
+her birim ayri yerlestirilir; ortak (unit 0) pinler birim 1 ile cizilir.
 """
 
 import copy
@@ -11,34 +14,36 @@ import uuid
 
 from kiutils.items.common import (Effects, Font, Justify, PageSettings, Position,
                                   Property, TitleBlock)
-from kiutils.items.schitems import (HierarchicalSheetInstance, LocalLabel,
+from kiutils.items.schitems import (GlobalLabel, HierarchicalSheetInstance,
                                     NoConnect, SchematicSymbol, SymbolInstance,
                                     Text)
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 
 import design
+import kicad_env
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.join(HERE, '..', 'acoustic-swarm-node')
-SYMDIR = '/usr/share/kicad/symbols'
+SYMDIR = kicad_env.SYMDIR
 GRID = 2.54
 
 BLOCK_TITLES = {
-    'power': 'Guc girisi ve koruma (6S Li-Po 22.2 V)',
-    'buck': '6S -> 5 V buck (LMR16006X, 700 kHz)',
-    'ldo': '5 V -> 3.3 V LDO ve Teensy VIN izolasyonu',
-    'mcu': 'Teensy 4.1 (Gercek Zamanli I/O)',
-    'esc': '6x Itici ESC PWM cikislari (M0..M5)',
-    'imu': 'IMU (AFE-I2C, I2C0 400 kHz)',
-    'depth': 'Hidrostatik basinc sensoru (SEN0257 5V -> 3.3V ADC)',
-    'analog': 'Tup ici su sizinti probu ve 6S batarya ADC bolucu',
-    'ui': 'Akustik buzzer ve durum LED',
-    'killswitch': 'Su gecirmez manyetik kill-switch ve ESC guc kontaktoru',
+    'power': 'Pil girisi, kurma anahtari ve koruma (4S Li-ion)',
+    'battsense': 'Anahtarli pil gerilim olcumu (uykuda 0 akim)',
+    'aon': 'Hep acik besleme: HT7533-1 + piezo hasadi (kopru + HT7533-1)',
+    'wake': 'Pasif akustik uyanma (MCP6042 + TLV7031)',
+    'latch': 'Uyanma mandali (WAKE_CMP | PWR_HOLD -> BUCK_EN)',
+    'buck': 'VSYS -> 5 V buck (LMR16006X, 700 kHz)',
+    'ldo': 'Analog besleme (LP5907 3.3 V)',
+    'mcu': 'Teensy 4.1 (192 kHz cift ADC DMA, DSP)',
+    'afe': 'Hidrofon AFE: 20/40 dB cift kazanc, 40 kHz Sallen-Key',
+    'tx': 'Akustik modem vericisi (DRV8871, 24/28 kHz BFSK)',
+    'io': 'Su sizinti probu ve durum LED',
     'misc': 'Test noktalari ve montaj delikleri',
 }
-BLOCK_ORDER = ['power', 'buck', 'ldo', 'killswitch', 'mcu', 'esc', 'imu',
-               'depth', 'analog', 'ui', 'misc']
+BLOCK_ORDER = ['power', 'battsense', 'aon', 'latch', 'buck', 'ldo', 'wake', 'mcu',
+               'afe', 'tx', 'io', 'misc']
 
 
 def snap(v):
@@ -55,7 +60,7 @@ _lib_cache = {}
 def load_symbol(lib_id):
     """Kutuphaneden sembolu alir; 'extends' ile turetilmisse duzlestirir."""
     lib, name = lib_id.split(':')
-    path = (os.path.join(PROJ, 'stingray.kicad_sym') if lib == 'stingray'
+    path = (os.path.join(PROJ, 'acoustic.kicad_sym') if lib == 'acoustic'
             else os.path.join(SYMDIR, f'{lib}.kicad_sym'))
     if path not in _lib_cache:
         _lib_cache[path] = {s.entryName: s for s in SymbolLib.from_file(path).symbols}
@@ -78,12 +83,20 @@ def load_symbol(lib_id):
     return sym
 
 
-def pins_of(sym):
-    out = []
+def unit_pins(sym):
+    """{birim: [pin, ...]}; unit 0 pinleri ilk birime eklenir."""
+    out = {}
+    common = []
     for u in sym.units:
-        for p in u.pins:
-            out.append(p)
-    return out
+        if u.unitId == 0:
+            common.extend(u.pins)
+        else:
+            out.setdefault(u.unitId, []).extend(u.pins)
+    if not out:
+        return {1: common}
+    first = min(out)
+    out[first] = common + out[first]
+    return {k: v for k, v in sorted(out.items()) if v}
 
 
 CHAR_W = 1.05      # 1.27 mm yazi icin yaklasik karakter genisligi
@@ -93,22 +106,21 @@ def label_len(net):
     return len(net) * CHAR_W + 2.54 if net else 1.27
 
 
-def side_extents(part, sym):
+def side_extents(part, pins):
     """Her yon icin pin etiketlerinin kapladigi en uzun mesafe (mm)."""
     ext = {0: 0.0, 180: 0.0, 90: 0.0, 270: 0.0}
-    for q in pins_of(sym):
+    for q in pins:
         ext[q.position.angle] = max(ext[q.position.angle],
                                     label_len(part.pins.get(q.number, '')))
     return ext
 
 
-def cell_size(part, sym):
-    pins = pins_of(sym)
+def cell_size(part, pins):
     if not pins:
         return 15.24, 15.24
     xs = [p.position.X for p in pins]
     ys = [p.position.Y for p in pins]
-    ext = side_extents(part, sym)
+    ext = side_extents(part, pins)
     right_free = ext[180] == 0
     text_w = 10.16 if right_free else 0
     cw = (max(xs) - min(xs)) + ext[0] + ext[180] + text_w + 7.62
@@ -133,10 +145,10 @@ def build():
     sch = Schematic.create_new()
     sch.paper = PageSettings(paperSize='A2')
     sch.titleBlock = TitleBlock()
-    sch.titleBlock.title = 'Akustik Suru Dugum Karti'
+    sch.titleBlock.title = 'Akustik Suru Dugumu (acoustic-swarm-node)'
     sch.titleBlock.revision = 'A'
-    sch.titleBlock.date = '2026-10-29'
-    sch.titleBlock.company = 'CU AVTECH — Stingray Sualti Sistemleri'
+    sch.titleBlock.date = '2026-10-30'
+    sch.titleBlock.company = 'Pasif sonar + piezo enerji hasadi + akustik BFSK modem'
     sch.titleBlock.comments = {
         1: 'Rev A: tasarim asamasinda, henuz uretilmedi ve test edilmedi',
         2: 'Kaynak: hardware/gen/design.py (bu dosya uretilir, elle duzenlemeyin)',
@@ -157,25 +169,28 @@ def build():
             lib_syms[lib_id] = load_symbol(lib_id)
         return lib_syms[lib_id]
 
-    # Bloklari raf (shelf) yontemiyle sayfaya yerlestir
+    # Bloklari raf (shelf) yontemiyle sayfaya yerlestir; her birim ayri hucre
     page_w, x0, y0 = 560.0, 25.4, 30.48
     shelf_x, shelf_y, shelf_h = x0, y0, 0.0
     max_block_w = 250.0
     placed = []
     for blk in BLOCK_ORDER:
-        parts = by_block.get(blk, [])
+        cells = []
+        for p in by_block.get(blk, []):
+            for unit, pins in unit_pins(sym_for(p.sym)).items():
+                cells.append((p, unit, pins))
         rows, row, row_w = [], [], 0.0
-        for p in parts:
-            cw, ch = cell_size(p, sym_for(p.sym))
+        for p, unit, pins in cells:
+            cw, ch = cell_size(p, pins)
             if row and row_w + cw > max_block_w:
                 rows.append(row)
                 row, row_w = [], 0.0
-            row.append((p, cw, ch))
+            row.append((p, unit, pins, cw, ch))
             row_w += cw
         if row:
             rows.append(row)
-        bw = max(sum(c[1] for c in r) for r in rows)
-        bh = sum(max(c[2] for c in r) for r in rows) + 10.16
+        bw = max(sum(c[3] for c in r) for r in rows)
+        bh = sum(max(c[4] for c in r) for r in rows) + 10.16
         if shelf_x + bw > page_w:
             shelf_x, shelf_y, shelf_h = x0, shelf_y + shelf_h + 10.16, 0.0
         bx, by = shelf_x, shelf_y
@@ -186,21 +201,20 @@ def build():
                               uuid=str(uuid.uuid4())))
         cy = by + 7.62
         for r in rows:
-            rh = max(c[2] for c in r)
+            rh = max(c[4] for c in r)
             cx = bx
-            for p, cw, ch in r:
-                placed.append((p, cx, cy, cw, rh))
+            for p, unit, pins, cw, ch in r:
+                placed.append((p, unit, pins, cx, cy))
                 cx += cw
             cy += rh
         shelf_x += bw + 12.7
         shelf_h = max(shelf_h, bh)
 
-    for p, cx, cy, cw, ch in placed:
+    for p, unit, pins, cx, cy in placed:
         sym = sym_for(p.sym)
-        pins = pins_of(sym)
         xs = [q.position.X for q in pins] or [0]
         ys = [q.position.Y for q in pins] or [0]
-        ext = side_extents(p, sym)
+        ext = side_extents(p, pins)
         right_free = ext[180] == 0
         sx = snap(cx + ext[0] + 3.81 - min(xs))
         sy = snap(cy + ext[90] + 2.54 + max(ys))
@@ -208,6 +222,8 @@ def build():
         top = sy - max(ys)
         bot = sy - min(ys)
         is_flag = p.ref.startswith('#')
+        # Test noktasi ve montaj deligi footprint'leri BOM disidir; sembol de oyle olmali
+        in_bom = not is_flag and not p.ref.startswith(('TP', 'H'))
         if right_free:
             rx = sx + max(xs + [2.54]) + 2.54
             ref_pos, val_pos = (rx, sy - 1.27), (rx, sy + 1.27)
@@ -228,13 +244,13 @@ def build():
 
         inst = SchematicSymbol(
             libraryNickname=sym.libraryNickname, entryName=sym.entryName,
-            position=Position(X=fx(sx), Y=fx(sy), angle=0), unit=1,
-            inBom=not is_flag, onBoard=not is_flag,
+            position=Position(X=fx(sx), Y=fx(sy), angle=0), unit=unit,
+            inBom=in_bom, onBoard=not is_flag,
             uuid=str(uuid.uuid4()), properties=props,
             pins={q.number: str(uuid.uuid4()) for q in pins})
         sch.schematicSymbols.append(inst)
         sch.symbolInstances.append(SymbolInstance(
-            path=f'/{inst.uuid}', reference=p.ref, unit=1, value=p.value,
+            path=f'/{inst.uuid}', reference=p.ref, unit=unit, value=p.value,
             footprint=p.fp))
 
         for q in pins:
@@ -242,8 +258,8 @@ def build():
             net = p.pins.get(q.number, '')
             if net:
                 ang = (q.position.angle + 180) % 360
-                sch.labels.append(LocalLabel(
-                    text=net, position=Position(X=px, Y=py, angle=ang),
+                sch.globalLabels.append(GlobalLabel(
+                    text=net, shape='passive', position=Position(X=px, Y=py, angle=ang),
                     effects=label_effects(ang), uuid=str(uuid.uuid4())))
             elif q.electricalType != 'no_connect':
                 sch.noConnects.append(NoConnect(position=Position(X=px, Y=py),

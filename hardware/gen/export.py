@@ -11,6 +11,7 @@ import subprocess
 import zipfile
 
 import design
+import kicad_env
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.normpath(os.path.join(HERE, '..', 'acoustic-swarm-node'))
@@ -22,9 +23,7 @@ LAYERS = 'F.Cu,B.Cu,F.Paste,B.Paste,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts'
 
 
 def cli(*args):
-    env = dict(os.environ, KICAD7_FOOTPRINT_DIR='/usr/share/kicad/footprints',
-               KICAD7_SYMBOL_DIR='/usr/share/kicad/symbols')
-    r = subprocess.run(['kicad-cli', *args], capture_output=True, text=True, env=env)
+    r = subprocess.run([kicad_env.CLI, *args], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f'kicad-cli {" ".join(args)}\n{r.stdout}\n{r.stderr}')
 

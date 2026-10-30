@@ -1,3 +1,3 @@
 (sym_lib_table
-  (lib (name "stingray")(type "KiCad")(uri "${KIPRJMOD}/stingray.kicad_sym")(options "")(descr "Stingray ROV proje sembolleri"))
+  (lib (name "acoustic")(type "KiCad")(uri "${KIPRJMOD}/acoustic.kicad_sym")(options "")(descr "Akustik suru dugumu proje sembolleri"))
 )

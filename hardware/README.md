@@ -1,28 +1,44 @@
-# Akustik Suru Dugum Karti (Rev A)
+# Akustik Suru Dugumu Karti (Rev A)
 
-2 katmanli (110x85 mm, FR-4, 1.6 mm, 1 oz bakir) tasiyici ve analog on-uc (AFE) PCB tasarimi.
+Teensy 4.1 tabanli pasif akustik dinleme / akustik modem dugumu icin 2 katmanli (120x95 mm, FR-4, 1.6 mm, 1 oz bakir) PCB tasarimi. Rev A tasarim asamasindadir; uretilmedi ve test edilmedi.
 
-Kart uzerindeki alt devreler:
+| Ust yuz | Izometrik |
+| --- | --- |
+| ![Ust yuz](images/node-top.png) | ![Izometrik](images/node-iso.png) |
 
-- Piezo hasat / HV tampon girisi (`J1`): 1 A PTC sigorta (`F1`), ters polarite ve geri akim onleyici Schottky (`D1` SS16), cift yonlu TVS (`D2` SMBJ30CA) ve 47 uF depolama kondansatoru (`C1`).
-- Regülator katlari (`U1`, `U2`): `LMR16006X` (700 kHz, 5 V step-down) ve `AP2112K-3.3` (3.3 V dusuk gurultulu analog/sensor LDO). USB ile kart beslemesi arasinda `D4` (B5819W) izolasyonu bulunur.
-- Hidrofon analog girisi (`J2`): 10k/10k gerilim bolucu (`R21`, `R22`), 100 nF anti-aliasing RC filtre (`C11`, kesim frekansi ~318 Hz) ve `BAT54S` ciftli Schottky ADC koruma klempi (`D6`, Pin 16 / A2).
-- I2C sensor hatti (`J3`): 4.7k pull-up (`R17`, `R18`) ve 33 ohm seri hat direncleri (`R19`, `R20`, Pin 18/19).
-- 6 kanal transduser / eyleyici / BFSK modem cikisi (`J5..J10`): 220 ohm seri direnc ve uyku modunda kacak akimi onleyen 100k pull-down.
-- Su sizinti probu (`J4`) ve batarya/hasat gerilim bolucusu (`R26` 68k, `R27` 10k, `D7` BZT52C3V3, Pin 14 ve Pin 15).
-- Manyetik kurma/emniyet anahtari (`J11`) ve kontaktor surucusu (`J12`, `Q2` BCP56-16, `D10` SS16): NC manyetik reed anahtar bobinle seri baglidir; miknatis cekilmeden veya kurma halkasi acikken kontaktor yazilimdan bagimsiz olarak enerjilenemez (`T_KILL_SENSE` Pin 36).
+| Alt yuz (GND dokumu) | Bakir + silkscreen yerlesimi |
+| --- | --- |
+| ![Alt yuz](images/node-bottom.png) | ![Yerlesim](images/node-layout.svg) |
 
-## Dosyalar
+Gorseller KiCad 9 3B goruntuleyicisinden (`kicad-cli pcb render`) uretilmistir; Teensy 4.1 soketi icin 3B model olmadigindan sadece header pedleri gorunur.
 
-- `DESIGN.md`: Devre hesaplari, filtre kesim frekanslari ve parca secim notlari.
-- `WIRING.md`: Konnektor ve Teensy 4.1 pin baglantilari.
-- `acoustic-swarm-node/`: KiCad 7/9 proje, sematik (`.kicad_sch`) ve PCB (`.kicad_pcb`) dosyalari.
-- `output/`: Gerber + delik arsivi, BOM, dizgi (CPL) CSV, sematik PDF ve DRC raporu.
-- `gen/`: Tek kaynak netlist (`design.py`) uzerinden sematik ve PCB'yi ureten betikler.
+Kartin cozdugu temel elektriksel noktalar:
 
-Yeniden uretmek icin:
+- Uykuda Teensy, AFE ve modem tamamen enerjisiz; yalnizca ~7 uA'lik hep acik alan (`HT7533-1` + `MCP6042` 60 dB uyanma yukselteci + `TLV7031` karsilastirici) hidrofonu dinler ve `LMR16006X` buck'in `EN` pinini surer. Teensy acilinca `PWR_HOLD` (pin 23) ile kendi beslemesini tutar.
+- Hidrofon AFE'si: 20 dB on yukseltec, 39.7 kHz Sallen-Key anti-aliasing filtresi ve 40 dB ikinci kademe. Iki cikis Teensy'nin iki ADC'sinde ayni anda 192 kHz'te orneklenir (cift kazanc, ~80 dB dinamik aralik).
+- Piezo dalga/akinti hasadi: `BAT54S` tam dalga kopru, 22 uF depolama, 18 V kiskac ve ikinci `HT7533-1`; `BAT54C` diyot-VEYA ile hep acik alani besler.
+- `DRV8871` H-koprusuyle 24/28 kHz BFSK akustik modem vericisi (1 A akim siniri, kullanilmadiginda < 1 uA uyku).
+- Uykuda sifir akim ceken anahtarli pil olcumu (`AO3401A` + `2N7002`), seri NC reed kurma anahtari, 2 A sigorta, ters kutup ve TVS korumasi.
+
+## Dizin Yapisi
+
+- `DESIGN.md`: Devre hesaplari, akim butcesi, AFE ve baglanti butcesi, PCB kurallari, devreye alma.
+- `WIRING.md`: Konnektor ve Teensy 4.1 pin eslemesi.
+- `acoustic-swarm-node/`: KiCad proje, sematik ve PCB dosyalari.
+- `output/`: Gerber + delik paketi, BOM, CPL (pick-and-place), sematik PDF ve DRC raporu.
+- `images/`: 3B render ve yerlesim gorselleri.
+- `gen/`: Tek kaynak netlist (`design.py`) uzerinden sematik ve PCB'yi ureten Python betikleri.
+
+Yeniden uretmek icin (KiCad 9, `kiutils`, `numpy`, `scipy`):
 
 ```bash
 cd hardware/gen
 python3 build.py
+```
+
+Linux disinda KiCad yollari ortam degiskenleriyle verilir:
+
+```bash
+KICAD_SHARE="C:/Program Files/KiCad/9.0/share/kicad" KICAD_CLI="C:/Program Files/KiCad/9.0/bin/kicad-cli.exe" \
+  "C:/Program Files/KiCad/9.0/bin/python.exe" build.py
 ```

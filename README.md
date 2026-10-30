@@ -1,34 +1,72 @@
-# acoustic-underwater-drone_swarm
+# Akustik Suru Dugumu (acoustic-underwater-drone_swarm)
 
-Gomulu yazilim, pasif akustik sinyal isleme (LOFAR / DEMON) ve 2 katmanli AFE / enerji hasadi tasiyici kart tasarimi.
+Deniz tabanina birakilan, aylarca pille bekleyen pasif akustik dinleme dugumu: gemi/arac gurultusuyle uyanir, pervane imzasini LOFAR ve DEMON ile cikarir, sonucu 24/28 kHz BFSK akustik modemle komsu dugumlere cok atlamali (multi-hop) olarak yayar. Uyku akimini piezo dalga/akinti hasadi destekler.
 
-Su altinda bekleme modunda (dormant) duran dugumlerin dip akintisi ve dalga hareketlerinden piezoelektrik (PVDF/PZT) enerji hasadi yapmasi, hidrofondan alinan akustik sinyali FFT tabanli dar-bant ve zarf analizinden gecirerek su araclarinin pervane/saft imzasina gore dost-dusman siniflandirmasi yapmasi ve ultrasonik BFSK/TDMA paketleriyle diger dugumlerle haberlesmesi icin yazilmis cekirdek modullerdir.
+![Akustik suru dugum karti (KiCad 3B render)](hardware/images/node-iso.png)
 
-Saha hidrofon kalibrasyon katsayilari, gercek araclarin akustik imza tablolari ve gorev tetikleme mantigi bu depoda yer almaz. Testlerde sentetik 3-kanatli ve 5-kanatli pervane harmonik modelleri kullanilmistir.
+Sistem uc katmandan olusur:
 
-## Yapi
+- Donanim (`hardware/`): Teensy 4.1 tasiyici + hidrofon AFE + uyanma devresi + piezo hasadi + modem H-koprusu (2 katman, 120x95 mm, KiCad 9).
+- Firmware (`firmware/`): 192 kHz cift ADC DMA ornekleme, akisli LOFAR/DEMON islemcileri, Goertzel tabanli BFSK alici, SipHash etiketli mesh protokolu ve guc durum makinesi.
+- Model (`dsp/`): Bilesen degerlerinden AFE yaniti, uyku akim butcesi ve akustik baglanti butcesi; sematik ile firmware sabitlerinin tutarliligini test eder.
 
-- `firmware/src/acoustic_dsp.cpp`: 1024-nokta Radix-2 Cooley-Tukey FFT, Hanning pencereleme, ortam deniz gurultusunu bastirmak icin Two-Pass Split-Window (TPSW) CFAR beyazlatma, LOFAR tepe izleme ve yuksek frekans kavitasyon bandinin zarfini cozerek saft devri ile kanat gecis frekansini cikaran DEMON (Detection of Envelope Modulation on Noise) modulu.
-- `firmware/src/piezo_harvester.cpp`: Dusuk akimli derin uyku (`STATE_DEEP_SLEEP_HARVEST`), pasif akustik esik asiminda uyanma (`STATE_PASSIVE_LISTEN`), FFT siniflandirma (`STATE_DSP_CLASSIFY`) ve komsu dugumlere alarm yayini (`STATE_SWARM_TX_ALERT`) durum makinesi. Kapasitor/tampon bara gerilimini, govde su sizinti probunu ve manyetik emniyet anahtarini denetler.
-- `firmware/src/swarm_mesh.cpp`: Su alti akustik kanali icin 16 baytlik ikili paketleme (`0xA5 0x5A` baslik, kaynak dugum ID, sira numarasi, hop/TTL, IFF sinifi, kestirilen kanat sayisi, LOFAR frekansi, SNR, batarya yuzdesi, 16-bit anahtarli FNV-1a dogrulama etiketi ve CRC-16-CCITT). Coklu-yol yankilarinda ayni paketin tekrar yayinlanmasini engelleyen halka tampon ve dugum ID tabanli TDMA gecikmesi icerir.
-- `firmware/teensy_node/main.cpp`: Teensy 4.1 (Cortex-M7) uzerinde `IntervalTimer` ile 1024 Hz cift tamponlu (ping-pong) ADC ornekleme ve 24/28 kHz BFSK cikis surucusu.
-- `dsp/`: Sinyal isleme ve 48 saatlik enerji hasadi / suru uyanma dongusunun Python dogrulama betikleri (`acoustic_simulator.py`, `test_acoustic_pipeline.py`).
-- `hardware/`: KiCad 2 katmanli tasiyici ve analog on-uc (AFE) karti (Rev A, 110x85 mm). Detaylar ve uretim dosyalari `hardware/README.md` ve `hardware/DESIGN.md` icindedir.
+> **Durum:** Kart Rev A tasarim asamasindadir; uretilmedi ve donanimda test edilmedi. DSP ve modem zinciri sentetik sinyallerle (192 kHz) host testlerinde dogrulandi; firmware Teensy 4.1 icin derlenir. IFF kural seti bir demodur, saha imza kutuphanesi degildir.
 
-## Derleme ve Test
+## Calisma Dongusu
 
-Donanim olmadan C++ ve Python birim testlerini calistirmak icin:
+1. Uykuda yalnizca hep acik alan (~7 uA) calisir: `MCP6042` iki kademe ~60 dB (5..450 Hz) + tepe dedektoru + `TLV7031` karsilastirici.
+2. Esik asilinca karsilastirici `LMR16006X` buck'i acar; RC mandal Teensy acilisina (~0.4 s) kadar gucu tutar, Teensy `PWR_HOLD` (pin 23) ile devralir.
+3. Teensy, AFE'nin 20 dB ve 40 dB cikislarini ADC0/ADC1'de ayni anda 192 kHz'te DMA ile ornekler; `DualGainSelector` kirpilmayan kanali secer.
+4. LOFAR (~2 s) ve DEMON (~2.7 s) sonucu `classify_signature` ile siniflandirilir. Hedef bulunursa dugum kendi TDMA yuvasinda alarm yayinlar.
+5. Komsu dugumlerden gelen cerceveler dogrulanir (CRC-16 + SipHash-2-4), TTL > 0 ise tekrar yayinlanir.
+6. Son aktiviteden 30 s sonra `PWR_HOLD` birakilir; buck kapanir, kart uykuya doner.
+
+## Firmware (`firmware/`)
+
+- `acoustic_dsp.cpp`: Radix-2 FFT, Hanning, Two-Pass Split-Window CFAR beyazlatma.
+  - `LofarProcessor`: 192 kHz -> (4. derece Butterworth, /16) -> (/6) 2 kHz, 1024 noktalik FFT, 4 spektrum ortalamasi, 20..700 Hz tepe arama.
+  - `DemonProcessor`: 4..30 kHz bant geciren -> kare-yasasi zarf -> /64 ortalama -> (LP 150 Hz, /8) 375 Hz -> 1024 noktalik FFT. Saft (2.5..11.5 Hz) ve N = 3..7 kanat harmonigi; yanlis alarm olasiligi ~7e-4 olacak sekilde 10 dB esik.
+  - `DualGainSelector`: 20/40 dB AFE kanal secimi, kirpilma sonrasi 256 ornek histerezis.
+- `dsp_filter.cpp`: RBJ biquad, 4. derece Butterworth, desimatorler.
+- `bfsk_modem.cpp`: Verici bit plani (16 bit preamble + cerceve). Alicida 192 noktalik Goertzel (24/28 kHz tonlar + 20/32 kHz bant disi gurultu referansi), ceyrek sembol adimli 4 zamanlama seridi, `0xA55A` senkron kelimesi, verici sirasinda alici susturma.
+- `swarm_mesh.cpp`: 20 baytlik cerceve, SipHash-2-4 (128 bit anahtar, 32 bit etiket) + CRC-16-CCITT, (kaynak, sira) halka tamponuyla tekrar eleme, TTL ile cok atlamali aktarim, dugum kimligine gore 250 ms TDMA yuvasi.
+- `power_manager.cpp`: `BOOT / LISTEN / SHUTDOWN / FAULT_LEAK / LOW_BATT` durum makinesi; dinleme penceresi, alarm hiz siniri, sizintida periyodik alarm, dusuk pilde kapanma.
+- `teensy_node/main.cpp`: Teensy entegrasyonu (`ADC` + `AnalogBufferDMA`, `IntervalTimer` ile sembol sembol BFSK yayini).
+
+## Donanim (`hardware/`)
+
+- 4S Li-ion girisi: 2 A sigorta, seri NC reed kurma anahtari, SS26 ters kutup, SMBJ20CA TVS.
+- Hep acik alan: `HT7533-1` (30 V giris, 2.5 uA) ve piezo hasadi (BAT54S kopru + 22 uF + 18 V kiskac + ikinci `HT7533-1`), `BAT54C` diyot-VEYA.
+- Uyanma mandali: `WAKE_CMP` VEYA `PWR_HOLD` -> 1 s RC -> `LMR16006X` `EN`.
+- Hidrofon AFE: `MCP6022` x2, 20 dB + Sallen-Key 39.7 kHz (Q 0.74) + 20 dB, 100 ohm / 2.2 nF ADC surme ve BAT54S kiskaclari; `LP5907` dusuk gurultulu analog besleme.
+- Modem vericisi: `DRV8871`, FlexPWM 24/28 kHz, 62k ILIM (~1 A), DC blok kondansatoru; eslesme trafosu ve projektor kart disi.
+- Uykuda sifir akimli pil olcumu (`AO3401A` + `2N7002` yuksek taraf anahtari).
+
+Tasarim hesaplari `hardware/DESIGN.md`, konnektor tablolari `hardware/WIRING.md`, uretim dosyalari (Gerber, BOM, CPL, sematik PDF, DRC raporu) `hardware/output/` altindadir.
+
+## Derleme ve Testler
+
+Donanim olmadan calisan C++ ve Python testleri:
 
 ```bash
-cmake -S firmware/test -B build/test
-cmake --build build/test
-ctest --test-dir build/test --output-on-failure
+cmake -S firmware/test -B build/test && cmake --build build/test && ctest --test-dir build/test --output-on-failure
 
-python3 dsp/test_acoustic_pipeline.py
+python3 dsp/test_node_model.py
+python3 dsp/node_model.py          # AFE yaniti, akim butcesi, baglanti butcesi ozeti
 ```
 
-Teensy 4.1 hedef derlemesi (PlatformIO):
+Teensy 4.1 derlemesi:
 
 ```bash
-pio run -d firmware -e teensy41_acoustic_node
+cd firmware
+pio run -e node      # Rev A kart: uyanma/uyku dongusu
+pio run -e bench     # Tezgah: USB beslemede surekli uyanik
 ```
+
+Saha icin suru anahtari uretme:
+
+```bash
+python3 scripts/gen_swarm_key.py      # build_flags satirini yazar
+```
+
+Tezgah testi adimlari: `docs/tezgah_testi.md`.
